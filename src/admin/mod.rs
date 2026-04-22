@@ -8,13 +8,6 @@
 //! - 修改凭据优先级
 //! - 重置失败计数
 //! - 查询凭据余额
-//!
-//! # 使用
-//! ```ignore
-//! let admin_service = AdminService::new(token_manager.clone());
-//! let admin_state = AdminState::new(admin_api_key, admin_service);
-//! let admin_router = create_admin_router(admin_state);
-//! ```
 
 mod error;
 mod handlers;

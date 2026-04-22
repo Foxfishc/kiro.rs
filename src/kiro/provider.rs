@@ -7,16 +7,16 @@
 use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 use reqwest::Client;
-use reqwest::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST, HeaderMap, HeaderValue};
+use reqwest::header::HeaderMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use uuid::Uuid;
 
 #[cfg(not(feature = "sensitive-logs"))]
 use crate::common::utf8::floor_char_boundary;
 use crate::http_client::{ProxyConfig, build_client};
+use crate::kiro::endpoint::{IDE_ENDPOINT_NAME, IdeEndpoint, KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::{CallContext, MultiTokenManager};
@@ -57,17 +57,44 @@ pub struct KiroProvider {
     global_proxy: RwLock<Option<ProxyConfig>>,
     /// 凭据级代理 client 缓存（key: credential_id）
     client_cache: Mutex<HashMap<u64, Client>>,
+    /// 端点实现注册表（第一阶段只注册 ide）
+    endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
+    /// 默认端点名称
+    default_endpoint: String,
 }
 
 impl KiroProvider {
+    fn default_endpoints() -> HashMap<String, Arc<dyn KiroEndpoint>> {
+        let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
+        let ide: Arc<dyn KiroEndpoint> = Arc::new(IdeEndpoint::new());
+        endpoints.insert(ide.name().to_string(), ide);
+        endpoints
+    }
+
     /// 创建新的 KiroProvider 实例
     #[allow(dead_code)]
     pub fn new(token_manager: Arc<MultiTokenManager>) -> Self {
-        Self::with_proxy(token_manager, None)
+        Self::with_proxy(
+            token_manager,
+            None,
+            Self::default_endpoints(),
+            IDE_ENDPOINT_NAME.to_string(),
+        )
     }
 
     /// 创建带代理配置的 KiroProvider 实例
-    pub fn with_proxy(token_manager: Arc<MultiTokenManager>, proxy: Option<ProxyConfig>) -> Self {
+    pub fn with_proxy(
+        token_manager: Arc<MultiTokenManager>,
+        proxy: Option<ProxyConfig>,
+        endpoints: HashMap<String, Arc<dyn KiroEndpoint>>,
+        default_endpoint: String,
+    ) -> Self {
+        assert!(
+            endpoints.contains_key(&default_endpoint),
+            "默认端点 {} 未在 endpoints 注册表中",
+            default_endpoint
+        );
+
         let default_client = build_client(proxy.as_ref(), 720, token_manager.config().tls_backend)
             .expect("创建 HTTP 客户端失败");
 
@@ -76,6 +103,8 @@ impl KiroProvider {
             default_client: RwLock::new(default_client),
             global_proxy: RwLock::new(proxy),
             client_cache: Mutex::new(HashMap::new()),
+            endpoints,
+            default_endpoint,
         }
     }
 
@@ -101,12 +130,10 @@ impl KiroProvider {
         let global_proxy = self.global_proxy.read().clone();
         let effective_proxy = ctx.credentials.effective_proxy(global_proxy.as_ref());
 
-        // 如果凭据代理与全局代理相同，使用默认 client
         if effective_proxy == global_proxy {
             return self.default_client.read().clone();
         }
 
-        // 检查缓存
         {
             let cache = self.client_cache.lock();
             if let Some(client) = cache.get(&ctx.id) {
@@ -114,7 +141,6 @@ impl KiroProvider {
             }
         }
 
-        // 创建新 client 并缓存
         let config = self.token_manager.config();
         let client = build_client(effective_proxy.as_ref(), 720, config.tls_backend)
             .unwrap_or_else(|e| {
@@ -130,37 +156,18 @@ impl KiroProvider {
         client
     }
 
+    fn endpoint_for(&self, credentials: &KiroCredentials) -> anyhow::Result<Arc<dyn KiroEndpoint>> {
+        let name = credentials.effective_endpoint_name(Some(&self.default_endpoint));
+        self.endpoints
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("未知端点: {}", name))
+    }
+
     /// 获取 token_manager 的引用
     #[allow(dead_code)]
     pub fn token_manager(&self) -> &MultiTokenManager {
         &self.token_manager
-    }
-
-    /// 获取 API 基础 URL（使用凭据级 effective_api_region）
-    fn base_url(&self, credentials: &KiroCredentials) -> String {
-        let config = self.token_manager.config();
-        format!(
-            "https://q.{}.amazonaws.com/generateAssistantResponse",
-            credentials.effective_api_region(&config)
-        )
-    }
-
-    /// 获取 MCP API URL（使用凭据级 effective_api_region）
-    fn mcp_url(&self, credentials: &KiroCredentials) -> String {
-        let config = self.token_manager.config();
-        format!(
-            "https://q.{}.amazonaws.com/mcp",
-            credentials.effective_api_region(&config)
-        )
-    }
-
-    /// 获取 API 基础域名（使用凭据级 effective_api_region）
-    fn base_domain(&self, credentials: &KiroCredentials) -> String {
-        let config = self.token_manager.config();
-        format!(
-            "q.{}.amazonaws.com",
-            credentials.effective_api_region(&config)
-        )
     }
 
     /// 后台异步刷新余额缓存（如果需要）
@@ -186,120 +193,6 @@ impl KiroProvider {
                 }
             }
         });
-    }
-
-    /// 构建请求头
-    ///
-    /// # Arguments
-    /// * `ctx` - API 调用上下文，包含凭据和 token
-    fn build_headers(&self, ctx: &CallContext) -> anyhow::Result<HeaderMap> {
-        let config = self.token_manager.config();
-
-        let machine_id = machine_id::generate_from_credentials(&ctx.credentials, &config)
-            .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
-
-        let kiro_version = &config.kiro_version;
-        let os_name = &config.system_version;
-        let node_version = &config.node_version;
-
-        let x_amz_user_agent = format!("aws-sdk-js/1.0.34 KiroIDE-{}-{}", kiro_version, machine_id);
-
-        let user_agent = format!(
-            "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
-            os_name, node_version, kiro_version, machine_id
-        );
-
-        let mut headers = HeaderMap::new();
-
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            "x-amzn-codewhisperer-optout",
-            HeaderValue::from_static("true"),
-        );
-        headers.insert("x-amzn-kiro-agent-mode", HeaderValue::from_static("vibe"));
-        headers.insert(
-            "x-amz-user-agent",
-            HeaderValue::from_str(&x_amz_user_agent)?,
-        );
-        headers.insert(
-            reqwest::header::USER_AGENT,
-            HeaderValue::from_str(&user_agent)?,
-        );
-        headers.insert(
-            HOST,
-            HeaderValue::from_str(&self.base_domain(&ctx.credentials))?,
-        );
-        headers.insert(
-            "amz-sdk-invocation-id",
-            HeaderValue::from_str(&Uuid::new_v4().to_string())?,
-        );
-        headers.insert(
-            "amz-sdk-request",
-            HeaderValue::from_static("attempt=1; max=3"),
-        );
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", ctx.token))?,
-        );
-        headers.insert(CONNECTION, HeaderValue::from_static("close"));
-
-        Ok(headers)
-    }
-
-    /// 构建 MCP 请求头
-    fn build_mcp_headers(&self, ctx: &CallContext) -> anyhow::Result<HeaderMap> {
-        let config = self.token_manager.config();
-
-        let machine_id = machine_id::generate_from_credentials(&ctx.credentials, &config)
-            .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
-
-        let kiro_version = &config.kiro_version;
-        let os_name = &config.system_version;
-        let node_version = &config.node_version;
-
-        let x_amz_user_agent = format!("aws-sdk-js/1.0.34 KiroIDE-{}-{}", kiro_version, machine_id);
-
-        let user_agent = format!(
-            "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
-            os_name, node_version, kiro_version, machine_id
-        );
-
-        let mut headers = HeaderMap::new();
-
-        // 按照严格顺序添加请求头
-        headers.insert("content-type", HeaderValue::from_static("application/json"));
-        headers.insert(
-            "x-amz-user-agent",
-            HeaderValue::from_str(&x_amz_user_agent)?,
-        );
-        headers.insert("user-agent", HeaderValue::from_str(&user_agent)?);
-        headers.insert(
-            "host",
-            HeaderValue::from_str(&self.base_domain(&ctx.credentials))?,
-        );
-
-        if let Some(profile_arn) = Self::mcp_profile_arn_header_value(&ctx.credentials) {
-            headers.insert(
-                "x-amzn-kiro-profile-arn",
-                HeaderValue::from_str(profile_arn)?,
-            );
-        }
-
-        headers.insert(
-            "amz-sdk-invocation-id",
-            HeaderValue::from_str(&Uuid::new_v4().to_string())?,
-        );
-        headers.insert(
-            "amz-sdk-request",
-            HeaderValue::from_static("attempt=1; max=3"),
-        );
-        headers.insert(
-            "Authorization",
-            HeaderValue::from_str(&format!("Bearer {}", ctx.token))?,
-        );
-        headers.insert("Connection", HeaderValue::from_static("close"));
-
-        Ok(headers)
     }
 
     /// 发送非流式 API 请求
@@ -378,29 +271,42 @@ impl KiroProvider {
                 }
             };
 
-            let url = self.mcp_url(&ctx.credentials);
-            let headers = match self.build_mcp_headers(&ctx) {
-                Ok(h) => h,
+            let config = self.token_manager.config();
+            let machine_id = machine_id::generate_from_credentials(&ctx.credentials, &config)
+                .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
+            let endpoint = match self.endpoint_for(&ctx.credentials) {
+                Ok(endpoint) => endpoint,
                 Err(e) => {
                     last_error = Some(e);
                     continue;
                 }
             };
-            // 克隆 headers 用于错误日志（原 headers 会被 move）
-            #[cfg(feature = "sensitive-logs")]
-            let headers_for_log = headers.clone();
-
-            // 获取凭据对应的 client（支持凭据级代理）
+            let request_ctx = RequestContext {
+                credentials: &ctx.credentials,
+                token: &ctx.token,
+                machine_id: &machine_id,
+                config: &config,
+            };
+            let url = endpoint.mcp_url(&request_ctx);
+            let body = match endpoint.transform_mcp_body(request_body, &request_ctx) {
+                Ok(body) => body,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
             let client = self.get_client_for_credential(&ctx);
+            let base_request = client
+                .post(&url)
+                .body(body)
+                .header("content-type", "application/json")
+                .header("Connection", "close");
+            let request = endpoint.decorate_mcp(base_request, &request_ctx);
+            #[cfg(feature = "sensitive-logs")]
+            let _request_for_log = request.try_clone();
 
             // 发送请求
-            let response = match client
-                .post(&url)
-                .headers(headers)
-                .body(request_body.to_string())
-                .send()
-                .await
-            {
+            let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!(
@@ -433,7 +339,7 @@ impl KiroProvider {
             let body = response.text().await.unwrap_or_default();
 
             // 402 额度用尽
-            if status.as_u16() == 402 && Self::is_monthly_request_limit(&body) {
+            if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
                 let has_available = self.token_manager.report_quota_exhausted(ctx.id);
                 if !has_available {
                     anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
@@ -464,8 +370,7 @@ impl KiroProvider {
                         status = %status,
                         response_body = %body,
                         request_url = %url,
-                        request_headers = %Self::format_headers_for_log(&headers_for_log),
-                        request_body = %Self::truncate_body_for_log(request_body, 1200),
+                        request_body_bytes = request_body.len(),
                         "MCP 400 Bad Request - 请求格式错误"
                     );
                     #[cfg(not(feature = "sensitive-logs"))]
@@ -500,7 +405,7 @@ impl KiroProvider {
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
                 // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
-                if Self::is_invalid_bearer_token(&body) && forced_token_refresh.insert(ctx.id) {
+                if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
                         "MCP 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
                         attempt + 1,
@@ -620,41 +525,45 @@ impl KiroProvider {
                 }
             };
 
-            let url = self.base_url(&ctx.credentials);
-            let headers = match self.build_headers(&ctx) {
-                Ok(h) => h,
+            let config = self.token_manager.config();
+            let machine_id = machine_id::generate_from_credentials(&ctx.credentials, &config)
+                .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
+            let endpoint = match self.endpoint_for(&ctx.credentials) {
+                Ok(endpoint) => endpoint,
                 Err(e) => {
                     last_error = Some(e);
                     continue;
                 }
             };
-            // 克隆 headers 用于错误日志（原 headers 会被 move）
-            #[cfg(feature = "sensitive-logs")]
-            let headers_for_log = headers.clone();
-
-            // 动态注入当前凭据的 profile_arn（修复 IDC 凭据 403 问题）
-            // IDC 凭据的 Token 刷新不返回 profile_arn，需要使用凭据自身的 profile_arn
-            let final_body = match Self::inject_profile_arn(request_body, &ctx.credentials) {
+            let request_ctx = RequestContext {
+                credentials: &ctx.credentials,
+                token: &ctx.token,
+                machine_id: &machine_id,
+                config: &config,
+            };
+            let url = endpoint.api_url(&request_ctx);
+            let final_body = match endpoint.transform_api_body(request_body, &request_ctx) {
                 Ok(body) => body,
                 Err(e) => {
-                    tracing::warn!("注入 profile_arn 失败，使用原始请求体: {}", e);
+                    tracing::warn!("变换 endpoint 请求体失败，使用原始请求体: {}", e);
                     request_body.to_string()
                 }
             };
-            // 克隆 final_body 用于错误日志（原 final_body 会被 move 到 body()）
             let final_body_for_log = final_body.clone();
 
             // 获取凭据对应的 client（支持凭据级代理）
             let client = self.get_client_for_credential(&ctx);
+            let base_request = client
+                .post(&url)
+                .body(final_body)
+                .header("content-type", "application/json")
+                .header("Connection", "close");
+            let request = endpoint.decorate_api(base_request, &request_ctx);
+            #[cfg(feature = "sensitive-logs")]
+            let _request_for_log = request.try_clone();
 
             // 发送请求
-            let response = match client
-                .post(&url)
-                .headers(headers)
-                .body(final_body)
-                .send()
-                .await
-            {
+            let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!(
@@ -692,7 +601,7 @@ impl KiroProvider {
             let body = response.text().await.unwrap_or_default();
 
             // 402 Payment Required 且额度用尽：禁用凭据并故障转移
-            if status.as_u16() == 402 && Self::is_monthly_request_limit(&body) {
+            if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
                 tracing::warn!(
                     "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
                     attempt + 1,
@@ -743,7 +652,6 @@ impl KiroProvider {
                         status = %status,
                         response_body = %body,
                         request_url = %url,
-                        request_headers = %Self::format_headers_for_log(&headers_for_log),
                         request_body = %Self::truncate_body_for_log(&final_body_for_log, 1200),
                         "400 Bad Request - 请求格式错误"
                     );
@@ -781,7 +689,7 @@ impl KiroProvider {
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
                 // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
-                if Self::is_invalid_bearer_token(&body) && forced_token_refresh.insert(ctx.id) {
+                if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
                         "API 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
                         attempt + 1,
@@ -922,78 +830,6 @@ impl KiroProvider {
         }))
     }
 
-    fn is_aws_sso_oidc_credentials(credentials: &KiroCredentials) -> bool {
-        let auth_method = credentials.auth_method.as_deref();
-        matches!(auth_method, Some("builder-id") | Some("idc"))
-            || (credentials.client_id.is_some() && credentials.client_secret.is_some())
-    }
-
-    fn mcp_profile_arn_header_value(credentials: &KiroCredentials) -> Option<&str> {
-        if Self::is_aws_sso_oidc_credentials(credentials) {
-            return None;
-        }
-
-        credentials.profile_arn.as_deref()
-    }
-
-    /// 根据认证方式处理请求体中的 profileArn 字段
-    ///
-    /// 参考 CLIProxyAPIPlus 的 getEffectiveProfileArn 实现：
-    /// - AWS SSO OIDC (Builder ID/IDC) 用户**不需要** profileArn，发送它会导致 403 错误
-    /// - 只有 Kiro Desktop (social auth) 用户需要 profileArn
-    ///
-    /// # 行为
-    /// - 如果是 builder-id 或 idc 认证：移除请求体中的 profileArn 字段
-    /// - 如果是 social 认证且凭据有 profile_arn：注入/覆盖 profileArn 字段
-    /// - 其他情况：保持请求体不变
-    fn inject_profile_arn(
-        request_body: &str,
-        credentials: &crate::kiro::model::credentials::KiroCredentials,
-    ) -> anyhow::Result<String> {
-        // 检查认证方式
-        let auth_method = credentials.auth_method.as_deref();
-
-        // AWS SSO OIDC (Builder ID/IDC) - 不需要 profileArn，发送会导致 403
-        if Self::is_aws_sso_oidc_credentials(credentials) {
-            // 解析请求体，移除 profileArn 字段
-            let mut request: serde_json::Value = serde_json::from_str(request_body)?;
-
-            if let Some(obj) = request.as_object_mut()
-                && obj.remove("profileArn").is_some()
-            {
-                tracing::debug!(
-                    "已移除 profileArn 字段（auth_method={:?}，AWS SSO OIDC 不需要）",
-                    auth_method
-                );
-            }
-
-            return Ok(serde_json::to_string(&request)?);
-        }
-
-        // Social auth - 需要 profileArn
-        // 凭据没有 profile_arn 时，保持请求体不变
-        let Some(profile_arn) = Self::mcp_profile_arn_header_value(credentials) else {
-            return Ok(request_body.to_string());
-        };
-
-        // 解析请求体为 JSON
-        let mut request: serde_json::Value = serde_json::from_str(request_body)?;
-
-        // 安全检查：确保是对象类型，避免在非对象 JSON 上 panic
-        let obj = request
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("request body is not a JSON object"))?;
-
-        // 注入 profile_arn（覆盖原有值）
-        obj.insert(
-            "profileArn".to_string(),
-            serde_json::Value::String(profile_arn.to_string()),
-        );
-
-        // 序列化回字符串
-        Ok(serde_json::to_string(&request)?)
-    }
-
     fn retry_delay(attempt: usize) -> Duration {
         // 指数退避 + 少量抖动，避免上游抖动时放大故障
         const BASE_MS: u64 = 200;
@@ -1085,29 +921,6 @@ impl KiroProvider {
                 .is_some_and(reason_matches)
     }
 
-    fn is_monthly_request_limit(body: &str) -> bool {
-        if body.contains("MONTHLY_REQUEST_COUNT") {
-            return true;
-        }
-
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-            return false;
-        };
-
-        if value
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
-        {
-            return true;
-        }
-
-        value
-            .pointer("/error/reason")
-            .and_then(|v| v.as_str())
-            .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
-    }
-
     /// 检测是否为 MODEL_TEMPORARILY_UNAVAILABLE 错误
     fn is_model_temporarily_unavailable(body: &str) -> bool {
         if body.contains("MODEL_TEMPORARILY_UNAVAILABLE") {
@@ -1130,15 +943,6 @@ impl KiroProvider {
             .pointer("/error/reason")
             .and_then(|v| v.as_str())
             .is_some_and(|v| v == "MODEL_TEMPORARILY_UNAVAILABLE")
-    }
-
-    /// 检测是否为「bearer token invalid」类错误
-    ///
-    /// 典型返回：
-    /// `{"message":"The bearer token included in the request is invalid.","reason":null}`
-    fn is_invalid_bearer_token(body: &str) -> bool {
-        let lower = body.to_ascii_lowercase();
-        lower.contains("bearer token") && lower.contains("invalid")
     }
 
     /// 检测是否为「输入过长」类错误
@@ -1245,34 +1049,6 @@ impl KiroProvider {
         )
     }
 
-    /// 格式化 HeaderMap 为可读字符串（用于日志输出）
-    /// 敏感头部（Authorization）会被脱敏处理
-    #[cfg(feature = "sensitive-logs")]
-    fn format_headers_for_log(headers: &HeaderMap) -> String {
-        headers
-            .iter()
-            .map(|(name, value)| {
-                let value_str = value.to_str().unwrap_or("<binary>");
-                // 脱敏 Authorization 头
-                if name.as_str().eq_ignore_ascii_case("authorization") {
-                    let masked = if value_str.len() > 20 {
-                        format!(
-                            "{}...{}",
-                            &value_str[..10],
-                            &value_str[value_str.len() - 6..]
-                        )
-                    } else {
-                        "***".to_string()
-                    };
-                    format!("{}: {}", name, masked)
-                } else {
-                    format!("{}: {}", name, value_str)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// 截断请求体用于日志输出，保留头尾各 `keep` 个字符
     ///
     /// 避免在 sensitive-logs 模式下输出包含大量 base64 图片数据的完整请求体。
@@ -1311,9 +1087,12 @@ impl KiroProvider {
 mod tests {
     use super::*;
     use crate::kiro::cooldown::CooldownReason;
+    use crate::kiro::endpoint::{
+        IdeEndpoint, default_is_bearer_token_invalid, default_is_monthly_request_limit,
+    };
     use crate::kiro::model::credentials::KiroCredentials;
-    use crate::kiro::token_manager::CallContext;
     use crate::model::config::Config;
+    use reqwest::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderValue};
 
     fn create_test_provider(config: Config, credentials: KiroCredentials) -> KiroProvider {
         let tm = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
@@ -1321,32 +1100,45 @@ mod tests {
     }
 
     #[test]
-    fn test_base_url() {
+    fn test_ide_endpoint_api_url() {
         let config = Config::default();
         let credentials = KiroCredentials::default();
-        let provider = create_test_provider(config, credentials.clone());
-        assert!(provider.base_url(&credentials).contains("amazonaws.com"));
-        assert!(
-            provider
-                .base_url(&credentials)
-                .contains("generateAssistantResponse")
-        );
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        assert!(endpoint.api_url(&ctx).contains("amazonaws.com"));
+        assert!(endpoint.api_url(&ctx).contains("generateAssistantResponse"));
     }
 
     #[test]
-    fn test_base_domain() {
+    fn test_ide_endpoint_host_like_domain() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
         let credentials = KiroCredentials::default();
-        let provider = create_test_provider(config, credentials.clone());
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let request =
+            endpoint.decorate_api(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
         assert_eq!(
-            provider.base_domain(&credentials),
+            built.headers().get("host").unwrap(),
             "q.us-east-1.amazonaws.com"
         );
     }
 
     #[test]
-    fn test_build_headers() {
+    fn test_ide_endpoint_decorate_api_headers() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
         config.kiro_version = "0.8.0".to_string();
@@ -1355,30 +1147,72 @@ mod tests {
         credentials.profile_arn = Some("arn:aws:sso::123456789:profile/test".to_string());
         credentials.refresh_token = Some("a".repeat(150));
 
-        let provider = create_test_provider(config, credentials.clone());
-        let ctx = CallContext {
-            id: 1,
-            credentials,
-            token: "test_token".to_string(),
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
         };
-        let headers = provider.build_headers(&ctx).unwrap();
+        let request = endpoint.decorate_api(
+            reqwest::Client::new()
+                .post("https://example.com")
+                .header("content-type", "application/json")
+                .header("Connection", "close"),
+            &ctx,
+        );
+        let built = request.build().unwrap();
 
-        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
-        assert_eq!(headers.get("x-amzn-codewhisperer-optout").unwrap(), "true");
-        assert_eq!(headers.get("x-amzn-kiro-agent-mode").unwrap(), "vibe");
+        assert_eq!(
+            built.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            built.headers().get("x-amzn-codewhisperer-optout").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            built.headers().get("x-amzn-kiro-agent-mode").unwrap(),
+            "vibe"
+        );
         assert!(
-            headers
+            built
+                .headers()
                 .get(AUTHORIZATION)
                 .unwrap()
                 .to_str()
                 .unwrap()
                 .starts_with("Bearer ")
         );
-        assert_eq!(headers.get(CONNECTION).unwrap(), "close");
+        assert_eq!(built.headers().get(CONNECTION).unwrap(), "close");
     }
 
     #[test]
-    fn test_build_mcp_headers_includes_profile_arn_for_social_auth() {
+    fn test_ide_endpoint_decorate_api_sets_tokentype() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        config.kiro_version = "0.8.0".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("api_key".to_string());
+        credentials.kiro_api_key = Some("ksk_test_api_key".to_string());
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "ksk_test_api_key",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let request =
+            endpoint.decorate_api(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
+        assert_eq!(built.headers().get("tokentype").unwrap(), "API_KEY");
+    }
+
+    #[test]
+    fn test_ide_endpoint_decorate_mcp_includes_profile_arn_for_social_auth() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
         config.kiro_version = "0.8.0".to_string();
@@ -1387,17 +1221,20 @@ mod tests {
         credentials.auth_method = Some("social".to_string());
         credentials.profile_arn = Some("arn:aws:sso::123456789:profile/test".to_string());
         credentials.refresh_token = Some("a".repeat(150));
-
-        let provider = create_test_provider(config, credentials.clone());
-        let ctx = CallContext {
-            id: 1,
-            credentials,
-            token: "test_token".to_string(),
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
         };
-        let headers = provider.build_mcp_headers(&ctx).unwrap();
-
+        let request =
+            endpoint.decorate_mcp(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
         assert_eq!(
-            headers
+            built
+                .headers()
                 .get("x-amzn-kiro-profile-arn")
                 .unwrap()
                 .to_str()
@@ -1407,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_mcp_headers_omits_profile_arn_for_idc_auth() {
+    fn test_ide_endpoint_decorate_mcp_omits_profile_arn_for_idc_auth() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
         config.kiro_version = "0.8.0".to_string();
@@ -1418,16 +1255,18 @@ mod tests {
         credentials.client_id = Some("client".to_string());
         credentials.client_secret = Some("secret".to_string());
         credentials.refresh_token = Some("a".repeat(150));
-
-        let provider = create_test_provider(config, credentials.clone());
-        let ctx = CallContext {
-            id: 1,
-            credentials,
-            token: "test_token".to_string(),
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
         };
-        let headers = provider.build_mcp_headers(&ctx).unwrap();
-
-        assert!(headers.get("x-amzn-kiro-profile-arn").is_none());
+        let request =
+            endpoint.decorate_mcp(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
+        assert!(built.headers().get("x-amzn-kiro-profile-arn").is_none());
     }
 
     #[test]
@@ -1544,32 +1383,32 @@ mod tests {
     #[test]
     fn test_is_monthly_request_limit_detects_reason() {
         let body = r#"{"message":"You have reached the limit.","reason":"MONTHLY_REQUEST_COUNT"}"#;
-        assert!(KiroProvider::is_monthly_request_limit(body));
+        assert!(default_is_monthly_request_limit(body));
     }
 
     #[test]
     fn test_is_monthly_request_limit_nested_reason() {
         let body = r#"{"error":{"reason":"MONTHLY_REQUEST_COUNT"}}"#;
-        assert!(KiroProvider::is_monthly_request_limit(body));
+        assert!(default_is_monthly_request_limit(body));
     }
 
     #[test]
     fn test_is_monthly_request_limit_false() {
         let body = r#"{"message":"nope","reason":"DAILY_REQUEST_COUNT"}"#;
-        assert!(!KiroProvider::is_monthly_request_limit(body));
+        assert!(!default_is_monthly_request_limit(body));
     }
 
     #[test]
     fn test_is_invalid_bearer_token_true() {
         let body =
             r#"{"message":"The bearer token included in the request is invalid.","reason":null}"#;
-        assert!(KiroProvider::is_invalid_bearer_token(body));
+        assert!(default_is_bearer_token_invalid(body));
     }
 
     #[test]
     fn test_is_invalid_bearer_token_false() {
         let body = r#"{"message":"Forbidden","reason":null}"#;
-        assert!(!KiroProvider::is_invalid_bearer_token(body));
+        assert!(!default_is_bearer_token_invalid(body));
     }
 
     #[test]
@@ -1601,15 +1440,23 @@ mod tests {
     }
 
     #[test]
-    fn test_inject_profile_arn_with_social_auth() {
-        // Social 认证且凭据有 profile_arn 时，应覆盖请求体中的 profileArn
+    fn test_ide_endpoint_inject_profile_arn_with_social_auth() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("social".to_string());
         credentials.profile_arn = Some("arn:aws:sso::111111111:profile/social-profile".to_string());
 
         let request_body =
             r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
-        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
@@ -1619,41 +1466,53 @@ mod tests {
     }
 
     #[test]
-    fn test_inject_profile_arn_idc_removes_field() {
-        // IDC 认证时，应移除请求体中的 profileArn 字段
+    fn test_ide_endpoint_inject_profile_arn_idc_removes_field() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("idc".to_string());
         credentials.profile_arn = Some("arn:aws:sso::111111111:profile/idc-profile".to_string());
 
         let request_body =
             r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
-        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        // profileArn 应被移除
         assert!(parsed.get("profileArn").is_none());
-        // 其他字段应保留
         assert!(parsed.get("conversationState").is_some());
     }
 
     #[test]
-    fn test_inject_profile_arn_builder_id_removes_field() {
-        // Builder ID 认证时，应移除请求体中的 profileArn 字段
+    fn test_ide_endpoint_inject_profile_arn_builder_id_removes_field() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("builder-id".to_string());
 
         let request_body =
             r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
-        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        // profileArn 应被移除
         assert!(parsed.get("profileArn").is_none());
     }
 
     #[test]
-    fn test_inject_profile_arn_aws_sso_oidc_by_client_credentials() {
-        // 有 client_id + client_secret 时（AWS SSO OIDC 特征），应移除 profileArn
+    fn test_ide_endpoint_inject_profile_arn_aws_sso_oidc_by_client_credentials() {
         let mut credentials = KiroCredentials::default();
         credentials.client_id = Some("client123".to_string());
         credentials.client_secret = Some("secret456".to_string());
@@ -1661,44 +1520,66 @@ mod tests {
 
         let request_body =
             r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/old"}"#;
-        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        // profileArn 应被移除
         assert!(parsed.get("profileArn").is_none());
     }
 
     #[test]
-    fn test_inject_profile_arn_without_credential_arn() {
-        // Social 认证但凭据没有 profile_arn 时，应保持请求体不变
+    fn test_ide_endpoint_inject_profile_arn_without_credential_arn() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("social".to_string());
         assert!(credentials.profile_arn.is_none());
 
         let request_body =
             r#"{"conversationState":{},"profileArn":"arn:aws:sso::999999999:profile/original"}"#;
-        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
-        // 应返回原始请求体（未修改）
         assert_eq!(result, request_body);
     }
 
     #[test]
-    fn test_inject_profile_arn_adds_missing_field() {
-        // Social 认证且请求体没有 profileArn 字段时，应添加
+    fn test_ide_endpoint_inject_profile_arn_adds_missing_field() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("social".to_string());
         credentials.profile_arn = Some("arn:aws:sso::222222222:profile/new".to_string());
 
         let request_body = r#"{"conversationState":{"conversationId":"test"}}"#;
-        let result = KiroProvider::inject_profile_arn(request_body, &credentials).unwrap();
+        let endpoint = IdeEndpoint::new();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
             parsed["profileArn"].as_str().unwrap(),
             "arn:aws:sso::222222222:profile/new"
         );
-        // 确保原有字段保留
         assert_eq!(
             parsed["conversationState"]["conversationId"]
                 .as_str()

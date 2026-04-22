@@ -14,6 +14,10 @@ use crate::model::config::Config;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroCredentials {
+    /// 凭据是否仅用于运行时（不持久化到 credentials.json）
+    #[serde(skip)]
+    pub runtime_only: bool,
+
     /// 凭据唯一标识符（自增 ID）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
@@ -26,6 +30,11 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
 
+    /// Kiro API Key（headless 模式）
+    /// 设置后直接作为 Bearer Token 使用，无需 refreshToken
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kiro_api_key: Option<String>,
+
     /// Profile ARN
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_arn: Option<String>,
@@ -34,7 +43,7 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
 
-    /// 认证方式 (social / idc)
+    /// 认证方式 (social / idc / api_key)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
 
@@ -63,7 +72,7 @@ pub struct KiroCredentials {
     pub api_region: Option<String>,
 
     /// 凭据级 Machine ID 配置（可选）
-    /// 未配置时回退到 config.json 的 machineId；都未配置时由 refreshToken 派生
+    /// 未配置时回退到 config.json 的 machineId；都未配置时由 refreshToken 或 API Key 派生
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
 
@@ -91,6 +100,10 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_password: Option<String>,
 
+    /// 凭据级端点名称（可选，未配置时回退到 config.defaultEndpoint）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+
     /// 凭据是否被禁用（默认为 false）
     #[serde(default)]
     pub disabled: bool,
@@ -104,6 +117,8 @@ fn is_zero(value: &u32) -> bool {
 fn canonicalize_auth_method_value(value: &str) -> &str {
     if value.eq_ignore_ascii_case("builder-id") || value.eq_ignore_ascii_case("iam") {
         "idc"
+    } else if value.eq_ignore_ascii_case("api_key") || value.eq_ignore_ascii_case("apikey") {
+        "api_key"
     } else {
         value
     }
@@ -240,6 +255,14 @@ impl KiroCredentials {
         }
     }
 
+    pub fn effective_endpoint_name<'a>(&'a self, default_endpoint: Option<&'a str>) -> &'a str {
+        self.endpoint
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .or(default_endpoint)
+            .unwrap_or("ide")
+    }
+
     /// 从 JSON 字符串解析凭证
     #[allow(dead_code)]
     pub fn from_json(json_string: &str) -> Result<Self, serde_json::Error> {
@@ -273,6 +296,16 @@ impl KiroCredentials {
         if canonical != auth_method {
             self.auth_method = Some(canonical.to_string());
         }
+    }
+
+    pub fn is_api_key_credential(&self) -> bool {
+        self.kiro_api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+            || self
+                .auth_method
+                .as_deref()
+                .is_some_and(|method| canonicalize_auth_method_value(method) == "api_key")
     }
 
     /// 检查凭据是否支持 Opus 模型
@@ -331,6 +364,7 @@ mod tests {
             id: None,
             access_token: Some("token".to_string()),
             refresh_token: None,
+            kiro_api_key: None,
             profile_arn: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
@@ -340,12 +374,14 @@ mod tests {
             region: None,
             api_region: None,
             machine_id: None,
+            endpoint: None,
             email: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
             disabled: false,
+            runtime_only: false,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -448,6 +484,7 @@ mod tests {
             id: None,
             access_token: None,
             refresh_token: Some("test".to_string()),
+            kiro_api_key: None,
             profile_arn: None,
             expires_at: None,
             auth_method: None,
@@ -457,12 +494,14 @@ mod tests {
             region: Some("eu-west-1".to_string()),
             api_region: None,
             machine_id: None,
+            endpoint: None,
             email: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
             disabled: false,
+            runtime_only: false,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -477,6 +516,7 @@ mod tests {
             id: None,
             access_token: None,
             refresh_token: Some("test".to_string()),
+            kiro_api_key: None,
             profile_arn: None,
             expires_at: None,
             auth_method: None,
@@ -486,12 +526,14 @@ mod tests {
             region: None,
             api_region: None,
             machine_id: None,
+            endpoint: None,
             email: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
             disabled: false,
+            runtime_only: false,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -592,6 +634,7 @@ mod tests {
             id: Some(42),
             access_token: Some("token".to_string()),
             refresh_token: Some("refresh".to_string()),
+            kiro_api_key: None,
             profile_arn: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
@@ -601,12 +644,14 @@ mod tests {
             region: Some("us-west-2".to_string()),
             api_region: None,
             machine_id: Some("c".repeat(64)),
+            endpoint: None,
             email: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
             disabled: false,
+            runtime_only: false,
         };
 
         let json = original.to_pretty_json().unwrap();

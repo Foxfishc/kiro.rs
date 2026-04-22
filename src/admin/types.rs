@@ -52,6 +52,8 @@ pub struct CredentialStatusItem {
     pub region: Option<String>,
     /// 凭据级 API Region（单独覆盖 API 请求）
     pub api_region: Option<String>,
+    /// 最终生效的 endpoint 名称
+    pub endpoint: Option<String>,
 }
 
 // ============ 操作请求 ============
@@ -86,8 +88,11 @@ pub struct SetRegionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddCredentialRequest {
-    /// 刷新令牌（必填）
-    pub refresh_token: String,
+    /// 刷新令牌（OAuth 凭据必填，API Key 凭据不需要）
+    pub refresh_token: Option<String>,
+
+    /// Kiro API Key（API Key 凭据必填）
+    pub kiro_api_key: Option<String>,
 
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
@@ -113,6 +118,9 @@ pub struct AddCredentialRequest {
     /// 凭据级 Machine ID（可选，64 位字符串）
     /// 未配置时回退到 config.json 的 machineId
     pub machine_id: Option<String>,
+
+    /// 凭据级 endpoint（未配置时回退到 config.defaultEndpoint；当前已注册端点由服务端校验）
+    pub endpoint: Option<String>,
 
     /// 用户邮箱（可选，用于前端显示）
     pub email: Option<String>,

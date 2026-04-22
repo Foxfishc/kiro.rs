@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **新增 Kiro API Key / headless 凭据支持** — 后端凭据模型、TokenManager、Provider 与 Admin API/UI 现已支持 `kiroApiKey` / `authMethod=api_key`，API Key 凭据会直接作为 Bearer token 使用并自动补充 `tokentype=API_KEY`；同时支持通过 `KIRO_API_KEY` 环境变量注入最高优先级凭据，补齐 machine_id 派生、额度查询兼容与 Admin 添加凭据表单切换 (`src/main.rs`, `src/kiro/model/credentials.rs`, `src/kiro/machine_id.rs`, `src/kiro/token_manager.rs`, `src/kiro/provider.rs`, `src/admin/types.rs`, `src/admin/service.rs`, `admin-ui/src/types/api.ts`, `admin-ui/src/components/add-credential-dialog.tsx`)
+
 ## [v1.1.23] - 2026-04-18
 
 ### Changed

@@ -8,9 +8,11 @@ mod kiro;
 mod model;
 pub mod token;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
+use kiro::endpoint::{IdeEndpoint, KiroEndpoint};
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
 use kiro::provider::KiroProvider;
 use kiro::token_manager::MultiTokenManager;
@@ -54,8 +56,54 @@ async fn main() {
     let is_multiple_format = credentials_config.is_multiple();
 
     // 转换为按优先级排序的凭据列表
-    let credentials_list = credentials_config.into_sorted_credentials();
+    let mut credentials_list = credentials_config.into_sorted_credentials();
+
+    if let Ok(kiro_api_key) = std::env::var("KIRO_API_KEY")
+        && !kiro_api_key.trim().is_empty()
+    {
+        tracing::info!("检测到 KIRO_API_KEY 环境变量，添加 API Key 凭据（最高优先级）");
+        credentials_list.insert(
+            0,
+            KiroCredentials {
+                kiro_api_key: Some(kiro_api_key),
+                auth_method: Some("api_key".to_string()),
+                priority: u32::MIN,
+                runtime_only: true,
+                ..Default::default()
+            },
+        );
+    }
+
     tracing::info!("已加载 {} 个凭据配置", credentials_list.len());
+
+    let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
+    {
+        let ide: Arc<dyn KiroEndpoint> = Arc::new(IdeEndpoint::new());
+        endpoints.insert(ide.name().to_string(), ide);
+    }
+    let endpoint_names: Vec<String> = endpoints.keys().cloned().collect();
+
+    let default_endpoint = config.read().default_endpoint.clone();
+    if !endpoints.contains_key(&default_endpoint) {
+        tracing::error!(
+            "第一阶段仅支持已注册 endpoint，当前 defaultEndpoint={} 不受支持，已注册: {:?}",
+            default_endpoint,
+            endpoint_names
+        );
+        std::process::exit(1);
+    }
+    for cred in &credentials_list {
+        let endpoint = cred.effective_endpoint_name(Some(&default_endpoint));
+        if !endpoints.contains_key(endpoint) {
+            tracing::error!(
+                "第一阶段仅支持已注册 endpoint，凭据 id={:?} 指定了未支持 endpoint={}，已注册: {:?}",
+                cred.id,
+                endpoint,
+                endpoint_names
+            );
+            std::process::exit(1);
+        }
+    }
 
     // 获取第一个凭据用于日志显示
     let first_credentials = credentials_list.first().cloned().unwrap_or_default();
@@ -116,7 +164,12 @@ async fn main() {
         tracing::warn!("所有凭据余额初始化失败，将按优先级选择凭据");
     }
 
-    let kiro_provider = KiroProvider::with_proxy(token_manager.clone(), proxy_config.clone());
+    let kiro_provider = KiroProvider::with_proxy(
+        token_manager.clone(),
+        proxy_config.clone(),
+        endpoints,
+        default_endpoint.clone(),
+    );
     let kiro_provider = Arc::new(kiro_provider);
 
     // 初始化 count_tokens 配置
@@ -169,6 +222,7 @@ async fn main() {
                     config.clone(),
                     compression_config.clone(),
                     prompt_cache_runtime.clone(),
+                    endpoint_names.clone(),
                 );
                 let admin_state = admin::AdminState::new(admin_key, admin_service);
                 let admin_app = admin::create_admin_router(admin_state);

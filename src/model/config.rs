@@ -98,6 +98,10 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub prompt_cache_accounting_enabled: bool,
 
+    /// 默认端点名称（凭据未显式指定 endpoint 时使用）
+    #[serde(default = "default_endpoint")]
+    pub default_endpoint: String,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -130,6 +134,10 @@ fn default_node_version() -> String {
 
 fn default_count_tokens_auth_type() -> String {
     "x-api-key".to_string()
+}
+
+fn default_endpoint() -> String {
+    "ide".to_string()
 }
 
 fn default_prompt_cache_ttl_seconds() -> u64 {
@@ -298,6 +306,7 @@ impl Default for Config {
             compression: CompressionConfig::default(),
             prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
             prompt_cache_accounting_enabled: default_true(),
+            default_endpoint: default_endpoint(),
             config_path: None,
         }
     }

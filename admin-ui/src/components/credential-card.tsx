@@ -333,6 +333,10 @@ export function CredentialCard({
                 <span className="font-medium">{credential.proxyUrl}</span>
               </div>
             )}
+            <div className="col-span-2">
+              <span className="text-muted-foreground">Endpoint：</span>
+              <span className="font-medium">{credential.endpoint || 'ide'}</span>
+            </div>
             {/* Region 配置 */}
             <div className="col-span-2">
               <span className="text-muted-foreground">Region：</span>

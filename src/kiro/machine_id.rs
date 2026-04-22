@@ -34,7 +34,7 @@ fn normalize_machine_id(machine_id: &str) -> Option<String> {
 
 /// 根据凭证信息生成唯一的 Machine ID
 ///
-/// 优先使用凭据级 machineId，其次使用 config.machineId，然后使用 refreshToken 生成
+/// 优先使用凭据级 machineId，其次使用 config.machineId，然后使用 refreshToken 或 API Key 生成
 pub fn generate_from_credentials(credentials: &KiroCredentials, config: &Config) -> Option<String> {
     // 如果配置了凭据级 machineId，优先使用
     if let Some(ref machine_id) = credentials.machine_id
@@ -55,6 +55,13 @@ pub fn generate_from_credentials(credentials: &KiroCredentials, config: &Config)
         && !refresh_token.is_empty()
     {
         return Some(sha256_hex(&format!("KotlinNativeAPI/{}", refresh_token)));
+    }
+
+    // API Key 模式下使用 API Key 稳定派生
+    if let Some(ref api_key) = credentials.kiro_api_key
+        && !api_key.is_empty()
+    {
+        return Some(sha256_hex(&format!("KiroAPIKey/{}", api_key)));
     }
 
     // 没有有效的凭证
@@ -110,6 +117,18 @@ mod tests {
     fn test_generate_with_refresh_token() {
         let mut credentials = KiroCredentials::default();
         credentials.refresh_token = Some("test_refresh_token".to_string());
+        let config = Config::default();
+
+        let result = generate_from_credentials(&credentials, &config);
+        assert!(result.is_some());
+        assert_eq!(result.as_ref().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_generate_with_api_key() {
+        let mut credentials = KiroCredentials::default();
+        credentials.kiro_api_key = Some("ksk_test_api_key".to_string());
+        credentials.auth_method = Some("api_key".to_string());
         let config = Config::default();
 
         let result = generate_from_credentials(&credentials, &config);

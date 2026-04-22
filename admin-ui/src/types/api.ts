@@ -41,6 +41,8 @@ export interface CredentialStatusItem {
   region: string | null
   /** 凭据级 API Region（单独覆盖 API 请求） */
   apiRegion: string | null
+  /** 最终生效的 endpoint */
+  endpoint?: string | null
 }
 
 // 余额响应
@@ -126,8 +128,9 @@ export interface SetPriorityRequest {
 
 // 添加凭据请求
 export interface AddCredentialRequest {
-  refreshToken: string
-  authMethod?: 'social' | 'idc'
+  refreshToken?: string
+  kiroApiKey?: string
+  authMethod?: 'social' | 'idc' | 'api_key'
   clientId?: string
   clientSecret?: string
   priority?: number
@@ -136,6 +139,7 @@ export interface AddCredentialRequest {
   /** 单独覆盖 API 请求使用的 region */
   apiRegion?: string
   machineId?: string
+  endpoint?: string
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string

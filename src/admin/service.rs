@@ -1,6 +1,6 @@
 //! Admin API 业务逻辑服务
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -48,6 +48,7 @@ pub struct AdminService {
     prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
+    known_endpoints: HashSet<String>,
 }
 
 impl AdminService {
@@ -57,6 +58,7 @@ impl AdminService {
         config: Arc<RwLock<Config>>,
         compression_config: Arc<RwLock<CompressionConfig>>,
         prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
+        known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
             .cache_dir()
@@ -76,6 +78,7 @@ impl AdminService {
             prompt_cache_runtime,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
+            known_endpoints: known_endpoints.into_iter().collect(),
         }
     }
 
@@ -83,6 +86,7 @@ impl AdminService {
     pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
         let snapshot = self.token_manager.snapshot();
 
+        let default_endpoint = self.config.read().default_endpoint.clone();
         let mut credentials: Vec<CredentialStatusItem> = snapshot
             .entries
             .into_iter()
@@ -103,6 +107,7 @@ impl AdminService {
                 last_used_at: entry.last_used_at.clone(),
                 region: entry.region,
                 api_region: entry.api_region,
+                endpoint: Some(entry.endpoint.unwrap_or(default_endpoint.clone())),
             })
             .collect();
 
@@ -279,25 +284,51 @@ impl AdminService {
     ) -> Result<AddCredentialResponse, AdminServiceError> {
         // 构建凭据对象
         let email = req.email.clone();
+        let effective_auth_method = if req
+            .kiro_api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+        {
+            "api_key".to_string()
+        } else {
+            req.auth_method.clone()
+        };
+        let endpoint = req
+            .endpoint
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(name) = endpoint.as_deref()
+            && !self.known_endpoints.contains(name)
+        {
+            let mut known: Vec<&str> = self.known_endpoints.iter().map(|s| s.as_str()).collect();
+            known.sort_unstable();
+            return Err(AdminServiceError::InvalidCredential(format!(
+                "endpoint 必须是已注册值，已注册: {:?}，收到: {}",
+                known, name
+            )));
+        }
         let new_cred = KiroCredentials {
             id: None,
             access_token: None,
-            refresh_token: Some(req.refresh_token),
+            refresh_token: req.refresh_token,
+            kiro_api_key: req.kiro_api_key,
             profile_arn: None,
             expires_at: None,
-            auth_method: Some(req.auth_method),
+            auth_method: Some(effective_auth_method),
             client_id: req.client_id,
             client_secret: req.client_secret,
             priority: req.priority,
             region: req.region,
             api_region: req.api_region,
             machine_id: req.machine_id,
+            endpoint,
             email: req.email,
             subscription_title: None,
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
             proxy_password: req.proxy_password,
             disabled: false, // 新添加的凭据默认启用
+            runtime_only: false,
         };
 
         // 调用 token_manager 添加凭据
@@ -306,6 +337,10 @@ impl AdminService {
             .add_credential(new_cred)
             .await
             .map_err(|e| self.classify_add_error(e))?;
+
+        if let Err(e) = self.token_manager.get_usage_limits_for(credential_id).await {
+            tracing::warn!("添加凭据后获取订阅等级失败（不影响凭据添加）: {}", e);
+        }
 
         Ok(AddCredentialResponse {
             success: true,
@@ -406,7 +441,9 @@ impl AdminService {
     /// 分类简单操作错误（set_disabled, set_priority, reset_and_enable）
     fn classify_error(&self, e: anyhow::Error, id: u64) -> AdminServiceError {
         let msg = e.to_string();
-        if msg.contains("不存在") {
+        if msg.contains("API Key 凭据无需刷新 Token") {
+            AdminServiceError::InvalidCredential(msg)
+        } else if msg.contains("不存在") {
             AdminServiceError::NotFound { id }
         } else {
             AdminServiceError::InternalError(msg)
@@ -454,9 +491,13 @@ impl AdminService {
         let is_invalid_credential = msg.contains("缺少 refreshToken")
             || msg.contains("refreshToken 为空")
             || msg.contains("refreshToken 已被截断")
+            || msg.contains("缺少 kiroApiKey")
+            || msg.contains("kiroApiKey 为空")
+            || msg.contains("API Key 凭据无需刷新 Token")
             || msg.contains("凭据已存在")
-            || msg.contains("refreshToken 重复")
+            || msg.contains("refreshToken 或 kiroApiKey 重复")
             || msg.contains("凭证已过期或无效")
+            || msg.contains("认证失败")
             || msg.contains("权限不足")
             || msg.contains("已被限流");
 
@@ -593,6 +634,7 @@ impl AdminService {
             id: None,
             access_token: None,
             refresh_token: Some(refresh_token),
+            kiro_api_key: None,
             profile_arn: None,
             expires_at: None,
             auth_method: Some(auth_method),
@@ -602,12 +644,14 @@ impl AdminService {
             region,
             api_region,
             machine_id: item.machine_id,
+            endpoint: None,
             email: None,
             subscription_title: None,
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
             disabled: false,
+            runtime_only: false,
         };
 
         match self.token_manager.add_credential(new_cred).await {
