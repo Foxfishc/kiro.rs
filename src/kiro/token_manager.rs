@@ -2801,40 +2801,49 @@ impl MultiTokenManager {
             });
         }
 
-        // P0#2 修复：立刻把新凭据写进 balance_cache 并把 recent_usage 设为已有凭据的中位数。
-        // 防止"雷暴效应"：新凭据若以 recent_usage=0 加入 LB，算法会立刻把它判为"最少使用"，
-        // 短时间内瞬间被打满 → 上游 429 雪崩（实测：#6 加入后 1 秒内被打 47 次 429）。
-        // 中位数 baseline 让新凭据"看起来跟现有凭据一样老"，自然进入轮询。
+        // P0#2 修复：立刻把新凭据写进 balance_cache。
+        //
+        // 雷暴避免设计：select_best_candidate_id 第一优先级是 `min(recent_usage)`。
+        // 中位数 baseline 会让新凭据永远大于一半凭据的 recent_usage → 永远到不了候选 →
+        // 永远不会被首次调用 → balance 永远不刷新 → 死锁（G/I 双 agent 共识）。
+        //
+        // 正确策略：用现有凭据中的 **max**(recent_usage) 作为 baseline + 取
+        // 现有凭据 balance 中位数作为 remaining，让新凭据：
+        //   1) recent_usage = max → 排在所有现有凭据之后，**不雷暴**
+        //   2) 等老凭据的 usage 涨到等于这个 max 时，新凭据跟它们 tie
+        //   3) tie-break 看 balance（已设为中位数 > 0），新凭据**能竞争**
+        //   4) 自然轮入 LB，避免 0→47 次 429 突袭
         {
             let mut cache = self.balance_cache.lock();
             let now = std::time::Instant::now();
-            let mut existing_usage: Vec<u32> = cache
+            let existing: Vec<(u32, f64)> = cache
                 .iter()
                 .filter(|(id, _)| **id != new_id)
-                .map(|(_, e)| e.recent_usage)
+                .map(|(_, e)| (e.recent_usage, e.remaining))
                 .collect();
-            existing_usage.sort_unstable();
-            let median_usage = if existing_usage.is_empty() {
-                0
+            let baseline_usage = existing.iter().map(|(u, _)| *u).max().unwrap_or(0);
+            let mut balances: Vec<f64> = existing.iter().map(|(_, b)| *b).collect();
+            balances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let baseline_balance = if balances.is_empty() {
+                0.0
             } else {
-                existing_usage[existing_usage.len() / 2]
+                balances[balances.len() / 2]
             };
             cache.insert(
                 new_id,
                 CachedBalance {
-                    // remaining=0 时 select 的 effective_balance 也是 0，让新凭据靠 recent_usage
-                    // 维度自然参与 tie-break；后台异步 refresh 完成后会更新到真实值。
-                    remaining: 0.0,
+                    remaining: baseline_balance,
                     cached_at: now,
                     initialized: true,
-                    recent_usage: median_usage,
+                    recent_usage: baseline_usage,
                     usage_reset_at: now,
                 },
             );
             tracing::info!(
-                "凭据 #{} 已加入 balance_cache: recent_usage={}（中位数 baseline，避免雷暴）",
+                "凭据 #{} 已加入 balance_cache: recent_usage={}（max baseline）, remaining={:.2}（中位数）",
                 new_id,
-                median_usage
+                baseline_usage,
+                baseline_balance
             );
         }
 

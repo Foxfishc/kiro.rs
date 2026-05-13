@@ -520,6 +520,12 @@ pub struct StreamContext {
     pub thinking_extracted: bool,
     /// thinking 块索引
     pub thinking_block_index: Option<i32>,
+    /// Q 上游 reasoningContentEvent 通过独立事件流推 thinking 内容（与老的
+    /// 嵌入 `<thinking>` 标签格式互斥）；此字段标记 reasoning 块是否打开。
+    pub reasoning_block_open: bool,
+    /// reasoningContentEvent 末尾 payload 可能带 signature，需要在 content_block_stop
+    /// 之前 emit signature_delta；缓存它直到关闭 thinking 块的时机。
+    pub pending_reasoning_signature: Option<String>,
     /// 文本块索引（按需动态分配）
     pub text_block_index: Option<i32>,
     /// 上游 meteringEvent 透传的 credit usage，仅用于最终 usage 统计，不生成独立 SSE 事件
@@ -553,6 +559,8 @@ impl StreamContext {
             in_thinking_block: false,
             thinking_extracted: false,
             thinking_block_index: None,
+            reasoning_block_open: false,
+            pending_reasoning_signature: None,
             text_block_index: None,
             metering: None,
             strip_thinking_leading_newline: false,
@@ -626,8 +634,18 @@ impl StreamContext {
                 }
                 Vec::new()
             }
-            Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
-            Event::ToolUse(tool_use) => self.process_tool_use(tool_use),
+            Event::ReasoningContent(reasoning) => self.process_reasoning_content(reasoning),
+            Event::AssistantResponse(resp) => {
+                // 切换到 text 流时关闭 reasoning 块（先 signature_delta 再 stop）
+                let mut events = self.close_reasoning_if_open();
+                events.extend(self.process_assistant_response(&resp.content));
+                events
+            }
+            Event::ToolUse(tool_use) => {
+                let mut events = self.close_reasoning_if_open();
+                events.extend(self.process_tool_use(tool_use));
+                events
+            }
             Event::ContextUsage(context_usage) => {
                 // 从上下文使用百分比计算实际的 input_tokens
                 let context_window = super::types::get_context_window_size(&self.model) as f64;
@@ -702,6 +720,115 @@ impl StreamContext {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// 处理 reasoningContentEvent — Q 上游对 thinking 模型推送的独立推理流。
+    ///
+    /// 与老式嵌入 `<thinking>` 标签的 assistantResponseEvent 路径**互斥**：
+    /// 实际生产中只会走一条路径（新模型走 reasoningContentEvent，旧 assistant
+    /// 文本流走 process_content_with_thinking）。
+    ///
+    /// Anthropic SSE 协议要求：
+    ///   content_block_start (thinking) → thinking_delta* → signature_delta → content_block_stop
+    fn process_reasoning_content(
+        &mut self,
+        reasoning: &crate::kiro::model::events::ReasoningContentEvent,
+    ) -> Vec<SseEvent> {
+        let mut events = Vec::new();
+
+        // 首次进入 reasoning：分配块索引、emit content_block_start
+        if !self.reasoning_block_open {
+            let index = self.state_manager.next_block_index();
+            self.thinking_block_index = Some(index);
+            self.reasoning_block_open = true;
+            events.extend(self.state_manager.handle_content_block_start(
+                index,
+                "thinking",
+                json!({
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": { "type": "thinking", "thinking": "" }
+                }),
+            ));
+        }
+
+        let Some(index) = self.thinking_block_index else {
+            return events;
+        };
+
+        if !reasoning.text.is_empty() {
+            self.output_tokens += estimate_tokens(&reasoning.text);
+            if let Some(delta_event) = self
+                .state_manager
+                .handle_content_block_delta(
+                    index,
+                    json!({
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": { "type": "thinking_delta", "thinking": reasoning.text }
+                    }),
+                )
+            {
+                events.push(delta_event);
+            }
+        }
+
+        // 暂存 signature，在关闭块时一并发出（Anthropic 规范要求 signature_delta
+        // 紧接在 content_block_stop 之前）
+        if let Some(sig) = &reasoning.signature {
+            self.pending_reasoning_signature = Some(sig.clone());
+        }
+
+        events
+    }
+
+    /// 切换到 text/tool_use 流之前关闭 reasoning 块：
+    /// emit signature_delta（若 pending）→ content_block_stop。
+    fn close_reasoning_if_open(&mut self) -> Vec<SseEvent> {
+        if !self.reasoning_block_open {
+            return Vec::new();
+        }
+        let Some(index) = self.thinking_block_index else {
+            self.reasoning_block_open = false;
+            return Vec::new();
+        };
+
+        let mut events = Vec::new();
+
+        // signature_delta：优先用上游 reasoning event 真实 signature。
+        // Anthropic 规范要求字段存在，没有就发空串：
+        //   - Round 6 实测：客户端 SDK 接受空串、Kiro 上游接受 200
+        //   - 但下一轮 history 回写时上游可能拒（"thinking-cache token 不合法"）
+        //   - 真实 reasoningContentEvent 通常带 signature，若未带 → log 警告便于追踪
+        let signature = match self.pending_reasoning_signature.take() {
+            Some(sig) if !sig.is_empty() => sig,
+            _ => {
+                tracing::warn!(
+                    "reasoning 块关闭时无 signature（上游未在 reasoningContentEvent 中提供），\
+                     使用空串占位。下一轮 history 回写该 thinking 块可能被上游拒。"
+                );
+                String::new()
+            }
+        };
+        if let Some(delta_event) = self.state_manager.handle_content_block_delta(
+            index,
+            json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": { "type": "signature_delta", "signature": signature }
+            }),
+        ) {
+            events.push(delta_event);
+        }
+
+        if let Some(stop_event) = self.state_manager.handle_content_block_stop(index) {
+            events.push(stop_event);
+        }
+        self.reasoning_block_open = false;
+        // 清掉 thinking_block_index，避免老路径 process_content_with_thinking 误用同一索引
+        // （Anthropic 协议允许多 thinking 块，但 index 必须不同；不清空可能让两条路径共用 index）
+        self.thinking_block_index = None;
+        events
     }
 
     /// 处理助手响应事件
@@ -1102,6 +1229,9 @@ impl StreamContext {
     /// 生成最终事件序列
     pub fn generate_final_events(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
+
+        // 如果只有 reasoning 内容（没有后续 text/tool_use），在流结束前关闭 reasoning 块
+        events.extend(self.close_reasoning_if_open());
 
         // Flush thinking_buffer 中的剩余内容
         if self.thinking_enabled && !self.thinking_buffer.is_empty() {

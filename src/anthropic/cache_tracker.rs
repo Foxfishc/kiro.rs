@@ -228,9 +228,11 @@ impl CacheTracker {
 
             match credential_entries.get_mut(&block.prefix_fingerprint) {
                 Some(existing) => {
+                    // 不刷新 expires_at：Anthropic 真实 prompt cache TTL 从首次写入起算，
+                    // 重写已存在的 prefix 不会续 TTL（命中前到期就过期）。
+                    // 仅更新可单调增长的字段，TTL 完全保留旧值，与上游对齐。
                     existing.token_count = existing.token_count.max(block.cumulative_tokens);
                     existing.ttl = existing.ttl.max(breakpoint.ttl);
-                    existing.expires_at = existing.expires_at.max(next_expiry);
                 }
                 None => {
                     credential_entries.insert(

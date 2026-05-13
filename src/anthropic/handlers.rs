@@ -592,6 +592,88 @@ fn mask_user_id(user_id: Option<&str>) -> String {
 ///
 /// 说明：
 /// - Claude Code/claude-cli 在某些 tool_use-only 场景下可能会把空 text block 写回 history；
+/// 从 assistant 文本中提取 `<thinking>...</thinking>` XML 标签作为独立 thinking 块。
+///
+/// Q 上游对非流式请求把推理嵌在 assistantResponseEvent 文本里（不发独立的
+/// reasoningContentEvent），需要在非流式响应聚合时拆出来：
+///   - 返回 (thinking_text, cleaned_text)
+///   - thinking_text 是所有 `<thinking>` 标签内容拼起来
+///   - cleaned_text 是去除 thinking 标签和紧随其后空白后的纯回答文本
+///
+/// 只处理最简单的非嵌套场景；嵌套或畸形标签直接保留原文本不拆分。
+fn extract_thinking_xml(text: &str) -> (String, String) {
+    const OPEN: &str = "<thinking>";
+    const CLOSE: &str = "</thinking>";
+
+    let mut thinking_parts: Vec<String> = Vec::new();
+    let mut cleaned = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+
+    while let Some(open_rel) = text[cursor..].find(OPEN) {
+        let open_abs = cursor + open_rel;
+        let content_start = open_abs + OPEN.len();
+        let Some(close_rel) = text[content_start..].find(CLOSE) else {
+            break;
+        };
+        let close_abs = content_start + close_rel;
+
+        // 标签前的内容保留到 cleaned
+        cleaned.push_str(&text[cursor..open_abs]);
+        // 标签内容（trim 两端换行）追加到 thinking_parts
+        thinking_parts.push(text[content_start..close_abs].trim_matches('\n').to_string());
+
+        cursor = close_abs + CLOSE.len();
+        // 吞掉标签后紧跟的两个换行（模型常用 `</thinking>\n\n` 作分隔符）
+        let after = &text[cursor..];
+        let strip = after.bytes().take_while(|b| *b == b'\n').count();
+        cursor += strip;
+    }
+
+    if thinking_parts.is_empty() {
+        return (String::new(), text.to_string());
+    }
+
+    cleaned.push_str(&text[cursor..]);
+    (thinking_parts.join("\n\n"), cleaned.trim().to_string())
+}
+
+#[cfg(test)]
+mod extract_thinking_tests {
+    use super::extract_thinking_xml;
+
+    #[test]
+    fn no_tags_returns_original() {
+        let (t, c) = extract_thinking_xml("just plain answer");
+        assert!(t.is_empty());
+        assert_eq!(c, "just plain answer");
+    }
+
+    #[test]
+    fn single_tag_extracted() {
+        let input = "<thinking>\nreasoning here\n</thinking>\n\nFinal answer";
+        let (t, c) = extract_thinking_xml(input);
+        assert_eq!(t, "reasoning here");
+        assert_eq!(c, "Final answer");
+    }
+
+    #[test]
+    fn unclosed_tag_preserves_original() {
+        let input = "<thinking>oops never closed";
+        let (t, c) = extract_thinking_xml(input);
+        assert!(t.is_empty());
+        assert_eq!(c, input);
+    }
+
+    #[test]
+    fn multiple_tags_joined() {
+        let input = "<thinking>first</thinking>\nbetween\n<thinking>second</thinking>\nend";
+        let (t, c) = extract_thinking_xml(input);
+        assert_eq!(t, "first\n\nsecond");
+        assert!(c.contains("between"));
+        assert!(c.contains("end"));
+    }
+}
+
 /// - 上游会拒绝空 text block（400: "text content blocks must be non-empty"）。
 /// - 空 text block 不携带任何语义，直接移除是最小且安全的兼容策略。
 fn strip_empty_text_content_blocks(messages: &mut [super::types::Message]) -> usize {
@@ -1360,6 +1442,9 @@ async fn handle_non_stream_request(
     }
 
     let mut text_content = String::new();
+    // reasoningContentEvent 累积（thinking 模型独立推理流），最终作为 thinking content block 返回
+    let mut reasoning_text = String::new();
+    let mut reasoning_signature: Option<String> = None;
     let mut tool_uses: Vec<serde_json::Value> = Vec::new();
     let mut has_tool_use = false;
     let mut stop_reason = "end_turn".to_string();
@@ -1379,6 +1464,12 @@ async fn handle_non_stream_request(
                     match event {
                         Event::AssistantResponse(resp) => {
                             text_content.push_str(&resp.content);
+                        }
+                        Event::ReasoningContent(reasoning) => {
+                            reasoning_text.push_str(&reasoning.text);
+                            if let Some(sig) = reasoning.signature {
+                                reasoning_signature = Some(sig);
+                            }
                         }
                         Event::ToolUse(tool_use) => {
                             has_tool_use = true;
@@ -1506,10 +1597,33 @@ async fn handle_non_stream_request(
     // 构建响应内容
     let mut content: Vec<serde_json::Value> = Vec::new();
 
-    if !text_content.is_empty() {
+    // 实测发现：Q 上游对**非流式**请求不发独立 reasoningContentEvent，
+    // 而是把推理以 `<thinking>...</thinking>` XML 标签嵌入 assistantResponse 文本。
+    // 这里从 text_content 提取 thinking 标签升级为独立 thinking content_block，
+    // 跟流式 reasoningContentEvent 路径保持响应结构一致。
+    // 若没有 XML 标签但有 reasoning_text（流式情况下被聚合走非流式 handler 的边缘场景），
+    // 直接用 reasoning_text。
+    let (extracted_thinking, cleaned_text) = extract_thinking_xml(&text_content);
+    let final_thinking = if !reasoning_text.is_empty() {
+        reasoning_text
+    } else {
+        extracted_thinking
+    };
+
+    // thinking 块必须排在 text/tool 之前（Anthropic 协议要求）。
+    // signature 字段必须存在（空字符串可被客户端 SDK 接受，但有 signature 才能写回 history）。
+    if !final_thinking.is_empty() {
+        content.push(json!({
+            "type": "thinking",
+            "thinking": final_thinking,
+            "signature": reasoning_signature.unwrap_or_default(),
+        }));
+    }
+
+    if !cleaned_text.is_empty() {
         content.push(json!({
             "type": "text",
-            "text": text_content
+            "text": cleaned_text
         }));
     }
 

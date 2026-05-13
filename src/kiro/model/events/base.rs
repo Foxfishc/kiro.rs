@@ -18,6 +18,8 @@ pub enum EventType {
     ContextUsage,
     /// 初始响应事件（流的第一帧，包含服务端分配的 conversationId）
     InitialResponse,
+    /// 推理内容事件（thinking 模型的服务端推理流，对应 Anthropic 的 `thinking` content_block）
+    ReasoningContent,
     /// 未知事件类型
     Unknown,
 }
@@ -31,6 +33,7 @@ impl EventType {
             "meteringEvent" => Self::Metering,
             "contextUsageEvent" => Self::ContextUsage,
             "initialResponseEvent" => Self::InitialResponse,
+            "reasoningContentEvent" => Self::ReasoningContent,
             _ => Self::Unknown,
         }
     }
@@ -43,6 +46,7 @@ impl EventType {
             Self::Metering => "meteringEvent",
             Self::ContextUsage => "contextUsageEvent",
             Self::InitialResponse => "initialResponseEvent",
+            Self::ReasoningContent => "reasoningContentEvent",
             Self::Unknown => "unknown",
         }
     }
@@ -75,6 +79,8 @@ pub enum Event {
     Metering(super::MeteringEvent),
     /// 上下文使用率
     ContextUsage(super::ContextUsageEvent),
+    /// 推理内容（thinking 模型的服务端推理流）
+    ReasoningContent(super::ReasoningContentEvent),
     /// 初始响应（首帧，含 conversationId）
     InitialResponse {
         /// 服务端分配的 conversationId（可能为空字符串）。
@@ -150,6 +156,10 @@ impl Event {
                     })
                     .unwrap_or_default();
                 Ok(Self::InitialResponse { conversation_id })
+            }
+            EventType::ReasoningContent => {
+                let payload = super::ReasoningContentEvent::from_frame(&frame)?;
+                Ok(Self::ReasoningContent(payload))
             }
             EventType::Unknown => Ok(Self::Unknown {}),
         }

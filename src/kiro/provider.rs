@@ -703,8 +703,9 @@ impl KiroProvider {
                     // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
                     // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
                     last_error = Some(e.into());
-                    // P0#1：本轮 retry 期间临时跳过当前凭据，避免连续撞同一个失败凭据
-                    failed_ids.push(ctx.id);
+                    // Round 11 修订：网络/链路错误**不** push failed_ids。
+                    // 原因：DNS/TLS/上游域名瘫等链路抖动跟凭据无关，把所有凭据 push
+                    // 后会触发"所有可用凭据均无法获取"误判 → 上游恢复后还要等容器自愈。
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
                     }
