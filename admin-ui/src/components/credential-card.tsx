@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2 } from 'lucide-react'
+import {
+  RefreshCw,
+  ChevronUp,
+  ChevronDown,
+  Wallet,
+  Trash2,
+  Loader2,
+  Settings2,
+} from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +33,7 @@ import {
   useForceRefreshToken,
   useDeleteCredential,
 } from '@/hooks/use-credentials'
+import { CredentialAdvancedDialog } from '@/components/credential-advanced-dialog'
 
 interface CredentialCardProps {
   credential: CredentialStatusItem
@@ -69,6 +78,7 @@ export function CredentialCard({
   const [editingEndpoint, setEditingEndpoint] = useState(false)
   const [endpointValue, setEndpointValue] = useState(credential.endpoint ?? '')
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showAdvancedDialog, setShowAdvancedDialog] = useState(false)
 
   const setDisabled = useSetDisabled()
   const setPriority = useSetPriority()
@@ -536,6 +546,15 @@ export function CredentialCard({
             </Button>
             <Button
               size="sm"
+              variant="outline"
+              onClick={() => setShowAdvancedDialog(true)}
+              title="Web Portal Idp / 凭据级代理 / 开启超额"
+            >
+              <Settings2 className="h-4 w-4 mr-1" />
+              高级
+            </Button>
+            <Button
+              size="sm"
               variant="destructive"
               onClick={() => setShowDeleteDialog(true)}
               disabled={!credential.disabled}
@@ -575,6 +594,12 @@ export function CredentialCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CredentialAdvancedDialog
+        credential={credential}
+        open={showAdvancedDialog}
+        onOpenChange={setShowAdvancedDialog}
+      />
     </>
   )
 }

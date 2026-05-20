@@ -7,10 +7,12 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, delete_credential, force_refresh_token, get_all_credentials,
-        get_cached_balances, get_credential_balance, get_global_config, get_proxy_config,
-        import_token_json, reset_failure_count, set_credential_disabled, set_credential_endpoint,
-        set_credential_priority, set_credential_region, update_global_config, update_proxy_config,
+        add_credential, delete_credential, enable_overage_sse, force_refresh_token,
+        get_all_credentials, get_cached_balances, get_credential_balance, get_global_config,
+        get_overage_status, get_proxy_config, import_token_json, reset_failure_count,
+        set_credential_disabled, set_credential_endpoint, set_credential_idp,
+        set_credential_priority, set_credential_proxy, set_credential_region, update_global_config,
+        update_proxy_config,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -45,6 +47,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/priority", post(set_credential_priority))
         .route("/credentials/{id}/region", post(set_credential_region))
         .route("/credentials/{id}/endpoint", post(set_credential_endpoint))
+        .route("/credentials/{id}/idp", post(set_credential_idp))
+        .route("/credentials/{id}/proxy", post(set_credential_proxy))
+        .route("/credentials/{id}/overage", get(get_overage_status))
+        .route("/credentials/{id}/overage/enable", get(enable_overage_sse))
         .route("/credentials/{id}/reset", post(reset_failure_count))
         .route("/credentials/{id}/refresh", post(force_refresh_token))
         .route("/credentials/{id}/balance", get(get_credential_balance))

@@ -21,9 +21,13 @@ const CLI_RUST_VERSION: &str = "1.92.0";
 const CLI_APP_VERSION: &str = "2.3.0";
 
 fn cli_os_tag() -> &'static str {
-    if cfg!(target_os = "macos") { "macos" }
-    else if cfg!(target_os = "windows") { "windows" }
-    else { "linux" }
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    }
 }
 
 pub struct CliEndpoint;
@@ -98,22 +102,36 @@ impl CliEndpoint {
     ///   - conversationState.history[*].userInputMessage.{origin, modelId}
     fn rewrite_origin_and_model(state: &mut serde_json::Value) {
         fn set_uim(uim: &mut serde_json::Value) {
-            let Some(obj) = uim.as_object_mut() else { return };
+            let Some(obj) = uim.as_object_mut() else {
+                return;
+            };
             if obj.contains_key("origin") {
-                obj.insert("origin".to_string(), serde_json::Value::String(CLI_ORIGIN.to_string()));
+                obj.insert(
+                    "origin".to_string(),
+                    serde_json::Value::String(CLI_ORIGIN.to_string()),
+                );
             }
             // kiro-cli 2.3.0 always sends modelId="auto" — the server picks the
             // model based on the user's subscription tier. Pinning specific
             // model IDs (CLAUDE_SONNET_4_..., etc.) returns 400 "Improperly
             // formed request" empirically.
             if obj.contains_key("modelId") {
-                obj.insert("modelId".to_string(), serde_json::Value::String("auto".to_string()));
+                obj.insert(
+                    "modelId".to_string(),
+                    serde_json::Value::String("auto".to_string()),
+                );
             }
         }
-        let Some(cs) = state.get_mut("conversationState").and_then(|v| v.as_object_mut()) else {
+        let Some(cs) = state
+            .get_mut("conversationState")
+            .and_then(|v| v.as_object_mut())
+        else {
             return;
         };
-        if let Some(uim) = cs.get_mut("currentMessage").and_then(|v| v.get_mut("userInputMessage")) {
+        if let Some(uim) = cs
+            .get_mut("currentMessage")
+            .and_then(|v| v.get_mut("userInputMessage"))
+        {
             set_uim(uim);
         }
         if let Some(hist) = cs.get_mut("history").and_then(|v| v.as_array_mut()) {
@@ -136,11 +154,22 @@ impl CliEndpoint {
     /// We only wrap if the content isn't already wrapped (idempotent — guards
     /// against re-wrap when a transform_body runs twice in retry paths).
     fn wrap_current_message_content(state: &mut serde_json::Value) {
-        let Some(current) = state.get_mut("currentMessage") else { return };
-        let Some(uim) = current.get_mut("userInputMessage") else { return };
-        let Some(content) = uim.get_mut("content").and_then(|v| v.as_str()).map(String::from)
-        else { return };
-        if content.contains("--- USER MESSAGE BEGIN ---") || content.contains("--- CONTEXT ENTRY BEGIN ---") {
+        let Some(current) = state.get_mut("currentMessage") else {
+            return;
+        };
+        let Some(uim) = current.get_mut("userInputMessage") else {
+            return;
+        };
+        let Some(content) = uim
+            .get_mut("content")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        else {
+            return;
+        };
+        if content.contains("--- USER MESSAGE BEGIN ---")
+            || content.contains("--- CONTEXT ENTRY BEGIN ---")
+        {
             return; // already wrapped
         }
         let now = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
@@ -169,17 +198,16 @@ impl CliEndpoint {
             .and_then(|v| v.get_mut("userInputMessage"))
             .and_then(|v| v.get_mut("userInputMessageContext"))
             .and_then(|v| v.as_object_mut())
+            && !ctx.contains_key("envState")
         {
-            if !ctx.contains_key("envState") {
-                // Insert envState at the head so it precedes `tools` (matches
-                // wire order). serde_json::Map preserves insertion order.
-                let mut new_ctx = serde_json::Map::new();
-                new_ctx.insert("envState".to_string(), env_state.clone());
-                for (k, v) in ctx.iter() {
-                    new_ctx.insert(k.clone(), v.clone());
-                }
-                *ctx = new_ctx;
+            // Insert envState at the head so it precedes `tools` (matches
+            // wire order). serde_json::Map preserves insertion order.
+            let mut new_ctx = serde_json::Map::new();
+            new_ctx.insert("envState".to_string(), env_state.clone());
+            for (k, v) in ctx.iter() {
+                new_ctx.insert(k.clone(), v.clone());
             }
+            *ctx = new_ctx;
         }
 
         // history[*].userInputMessage.userInputMessageContext.envState
@@ -191,11 +219,17 @@ impl CliEndpoint {
         // userInputMessageContext sits at the correct slot (right after content).
         if let Some(hist) = state.get_mut("history").and_then(|v| v.as_array_mut()) {
             for entry in hist {
-                let Some(uim) = entry.get_mut("userInputMessage") else { continue };
-                let Some(obj) = uim.as_object_mut() else { continue };
+                let Some(uim) = entry.get_mut("userInputMessage") else {
+                    continue;
+                };
+                let Some(obj) = uim.as_object_mut() else {
+                    continue;
+                };
 
                 // Build / update the ctx with envState first.
-                let existing_ctx = obj.remove("userInputMessageContext").unwrap_or_else(|| serde_json::json!({}));
+                let existing_ctx = obj
+                    .remove("userInputMessageContext")
+                    .unwrap_or_else(|| serde_json::json!({}));
                 let mut new_ctx_map = serde_json::Map::new();
                 new_ctx_map.insert("envState".to_string(), env_state.clone());
                 if let serde_json::Value::Object(old_ctx) = existing_ctx {
@@ -213,11 +247,19 @@ impl CliEndpoint {
                 let model_id = obj.remove("modelId");
                 let images = obj.remove("images");
                 obj.clear();
-                if let Some(v) = content { obj.insert("content".to_string(), v); }
+                if let Some(v) = content {
+                    obj.insert("content".to_string(), v);
+                }
                 obj.insert("userInputMessageContext".to_string(), new_ctx_val);
-                if let Some(v) = origin { obj.insert("origin".to_string(), v); }
-                if let Some(v) = model_id { obj.insert("modelId".to_string(), v); }
-                if let Some(v) = images { obj.insert("images".to_string(), v); }
+                if let Some(v) = origin {
+                    obj.insert("origin".to_string(), v);
+                }
+                if let Some(v) = model_id {
+                    obj.insert("modelId".to_string(), v);
+                }
+                if let Some(v) = images {
+                    obj.insert("images".to_string(), v);
+                }
             }
         }
     }
@@ -240,7 +282,8 @@ impl CliEndpoint {
         let is_sso_oidc = matches!(
             credentials.auth_method.as_deref(),
             Some("builder-id") | Some("idc")
-        ) || (credentials.client_id.is_some() && credentials.client_secret.is_some());
+        ) || (credentials.client_id.is_some()
+            && credentials.client_secret.is_some());
         if is_sso_oidc {
             obj.remove("profileArn");
         } else if let Some(arn) = credentials.profile_arn.as_deref() {

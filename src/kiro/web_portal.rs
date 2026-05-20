@@ -256,6 +256,62 @@ pub async fn get_user_usage_and_limits(
     .await
 }
 
+// ============================================================================
+// UpdateBillingPreferences —— 用于开启/关闭超额（overage）
+// ============================================================================
+
+/// UpdateBillingPreferences 请求体里的超额配置子结构
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOverageConfiguration {
+    pub overage_enabled: bool,
+}
+
+/// UpdateBillingPreferences 请求体
+///
+/// 抓包验证：POST /service/KiroWebPortalService/operation/UpdateBillingPreferences
+/// CBOR 体形如 `{ overageConfiguration: { overageEnabled: true }, profileArn: "arn:..." }`
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBillingPreferencesRequest {
+    pub overage_configuration: UpdateOverageConfiguration,
+    pub profile_arn: String,
+}
+
+/// UpdateBillingPreferences 响应（上游返回空对象，用 IgnoredAny 接收）
+#[derive(Debug, serde::Deserialize)]
+struct UpdateBillingPreferencesResponse {
+    #[serde(flatten, default)]
+    _ignored: serde::de::IgnoredAny,
+}
+
+/// 调用 UpdateBillingPreferences 开启或关闭超额
+///
+/// 必须传入 profileArn，否则上游会返回 400/ValidationException。
+pub async fn update_billing_preferences(
+    access_token: &str,
+    idp: &str,
+    profile_arn: &str,
+    overage_enabled: bool,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<()> {
+    if profile_arn.trim().is_empty() {
+        anyhow::bail!("UpdateBillingPreferences 需要 profileArn，但凭据未提供");
+    }
+    let _resp: UpdateBillingPreferencesResponse = request_cbor(
+        "UpdateBillingPreferences",
+        &UpdateBillingPreferencesRequest {
+            overage_configuration: UpdateOverageConfiguration { overage_enabled },
+            profile_arn: profile_arn.to_string(),
+        },
+        access_token,
+        idp,
+        proxy,
+    )
+    .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreditBonus {

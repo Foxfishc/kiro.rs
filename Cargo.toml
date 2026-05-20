@@ -44,3 +44,4 @@ rust-embed = "8"      # 嵌入静态文件
 mime_guess = "2"      # MIME 类型推断
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }  # 图片处理
 base64 = "0.22"       # Base64 编解码
+tokio-stream = { version = "0.1", features = ["sync"] }  # SSE 用：mpsc::Receiver -> Stream

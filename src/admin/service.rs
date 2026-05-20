@@ -112,6 +112,13 @@ impl AdminService {
                     api_region: entry.api_region,
                     endpoint,
                     effective_endpoint,
+                    idp: entry.idp,
+                    proxy_url: entry.proxy_url,
+                    proxy_username: entry.proxy_username,
+                    has_proxy_password: entry.has_proxy_password,
+                    overage_enabled: entry.overage_enabled,
+                    overage_enabling: entry.overage_enabling,
+                    overage_last_error: entry.overage_last_error,
                 }
             })
             .collect();
@@ -179,6 +186,51 @@ impl AdminService {
         self.token_manager
             .set_endpoint(id, endpoint)
             .map_err(|e| self.classify_error(e, id))
+    }
+
+    /// 设置凭据级 Web Portal Idp
+    pub fn set_idp(&self, id: u64, idp: Option<String>) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .set_idp_for(id, idp)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    /// 设置凭据级代理
+    pub fn set_credential_proxy(
+        &self,
+        id: u64,
+        proxy_url: Option<String>,
+        proxy_username: Option<String>,
+        proxy_password: Option<String>,
+    ) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .set_proxy_for(id, proxy_url, proxy_username, proxy_password)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    /// 读取凭据级 overage 状态
+    pub fn overage_status(
+        &self,
+        id: u64,
+    ) -> Result<crate::kiro::token_manager::OverageStatusSnapshot, AdminServiceError> {
+        self.token_manager
+            .overage_status_for(id)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    /// 尝试占用 overage 任务执行权
+    pub fn try_begin_overage_task(&self, id: u64) -> Result<bool, AdminServiceError> {
+        self.token_manager
+            .try_begin_overage_task(id)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
+    /// 暴露 MultiTokenManager 句柄供 overage SSE 流持有
+    ///
+    /// SSE handler 需要把 Arc 跨 tokio::spawn 传给后台轮询任务，
+    /// 因此这里返回 Arc 而不是 &MultiTokenManager。
+    pub fn token_manager_arc(&self) -> Arc<MultiTokenManager> {
+        Arc::clone(&self.token_manager)
     }
 
     /// 重置失败计数并重新启用
@@ -349,6 +401,7 @@ impl AdminService {
             api_region: req.api_region,
             machine_id: req.machine_id,
             endpoint,
+            idp: None,
             email: req.email,
             subscription_title: None,
             proxy_url: req.proxy_url,
@@ -672,6 +725,7 @@ impl AdminService {
             api_region,
             machine_id: item.machine_id,
             endpoint: None,
+            idp: None,
             email: None,
             subscription_title: None,
             proxy_url: None,

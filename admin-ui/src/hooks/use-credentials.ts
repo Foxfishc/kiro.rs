@@ -7,6 +7,8 @@ import {
   setCredentialPriority,
   setCredentialRegion,
   setCredentialEndpoint,
+  setCredentialIdp,
+  setCredentialProxy,
   resetCredentialFailure,
   forceRefreshToken,
   getCredentialBalance,
@@ -22,7 +24,12 @@ import {
   getGlobalConfig,
   updateGlobalConfig,
 } from '@/api/credentials'
-import type { AddCredentialRequest, ImportTokenJsonRequest, UpdateGlobalConfigRequest } from '@/types/api'
+import type {
+  AddCredentialRequest,
+  ImportTokenJsonRequest,
+  UpdateGlobalConfigRequest,
+  SetCredentialProxyRequest,
+} from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -131,6 +138,30 @@ export function useSetEndpoint() {
   return useMutation({
     mutationFn: ({ id, endpoint }: { id: number; endpoint: string | null }) =>
       setCredentialEndpoint(id, endpoint),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 设置凭据级 idp
+export function useSetIdp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, idp }: { id: number; idp: string | null }) =>
+      setCredentialIdp(id, idp),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 设置凭据级代理
+export function useSetCredentialProxy() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, req }: { id: number; req: SetCredentialProxyRequest }) =>
+      setCredentialProxy(id, req),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
     },

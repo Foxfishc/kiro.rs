@@ -104,6 +104,11 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
+    /// Web Portal Idp 标识（用于 Cookie: Idp=<idp>，默认 "Google"）
+    /// 影响 UpdateBillingPreferences、GetUserInfo 等 web portal 接口的鉴权 cookie
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idp: Option<String>,
+
     /// 凭据是否被禁用（默认为 false）
     #[serde(default)]
     pub disabled: bool,
@@ -234,6 +239,31 @@ impl KiroCredentials {
             .filter(|s| !s.trim().is_empty())
             .or_else(|| self.region.as_deref().filter(|s| !s.trim().is_empty()))
             .unwrap_or(config.effective_api_region())
+    }
+
+    /// 获取 Web Portal Idp 标识（用于 Cookie: Idp=<idp>）
+    ///
+    /// 优先使用凭据级 `idp` 字段；未设置时根据 `auth_method` 推断：
+    /// - social → "Google"（绝大多数用户为 Google 登录）
+    /// - idc / api_key → 留空（这两种凭据不应调用 web portal 接口）
+    pub fn effective_idp(&self) -> &str {
+        if let Some(idp) = self
+            .idp
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return idp;
+        }
+        match self
+            .auth_method
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("social") | None => "Google",
+            _ => "",
+        }
     }
 
     /// 获取有效的代理配置
@@ -382,6 +412,7 @@ mod tests {
             proxy_password: None,
             disabled: false,
             runtime_only: false,
+            idp: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -502,6 +533,7 @@ mod tests {
             proxy_password: None,
             disabled: false,
             runtime_only: false,
+            idp: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -534,6 +566,7 @@ mod tests {
             proxy_password: None,
             disabled: false,
             runtime_only: false,
+            idp: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -652,6 +685,7 @@ mod tests {
             proxy_password: None,
             disabled: false,
             runtime_only: false,
+            idp: None,
         };
 
         let json = original.to_pretty_json().unwrap();

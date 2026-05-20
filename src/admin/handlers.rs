@@ -3,16 +3,19 @@
 use axum::{
     Json,
     extract::{Path, State},
-    response::IntoResponse,
+    response::{IntoResponse, Sse, sse::Event},
 };
+use futures::StreamExt;
 
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, ImportTokenJsonRequest, SetDisabledRequest, SetEndpointRequest,
+        AddCredentialRequest, ImportTokenJsonRequest, OverageStatusResponse,
+        SetCredentialProxyRequest, SetDisabledRequest, SetEndpointRequest, SetIdpRequest,
         SetPriorityRequest, SetRegionRequest, SuccessResponse, UpdateProxyConfigRequest,
     },
 };
+use crate::kiro::overage;
 
 /// GET /api/admin/credentials
 /// 获取所有凭据状态
@@ -200,6 +203,90 @@ pub async fn update_global_config(
 ) -> impl IntoResponse {
     match state.service.update_global_config(req).await {
         Ok(_) => Json(SuccessResponse::new("全局配置已更新")).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/:id/idp - 设置凭据级 Web Portal Idp
+pub async fn set_credential_idp(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetIdpRequest>,
+) -> impl IntoResponse {
+    match state.service.set_idp(id, payload.idp) {
+        Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} idp 已更新", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/:id/proxy - 设置凭据级代理
+pub async fn set_credential_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetCredentialProxyRequest>,
+) -> impl IntoResponse {
+    match state.service.set_credential_proxy(
+        id,
+        payload.proxy_url,
+        payload.proxy_username,
+        payload.proxy_password,
+    ) {
+        Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 代理已更新", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// GET /api/admin/credentials/:id/overage - 读取凭据 overage 状态
+pub async fn get_overage_status(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.overage_status(id) {
+        Ok(snap) => Json(OverageStatusResponse {
+            id: snap.id,
+            enabled: snap.enabled,
+            enabling: snap.enabling,
+            last_error: snap.last_error,
+            has_profile_arn: snap.has_profile_arn,
+            auth_method: snap.auth_method,
+        })
+        .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// GET /api/admin/credentials/:id/overage/enable - 开启 overage（SSE 流）
+///
+/// 1. 通过 `try_begin_overage_task` 占用执行权（防止并发触发）；
+/// 2. 后台 spawn 一个轮询任务，把进度事件推到 SSE；
+/// 3. 客户端断开不会取消后台任务（fire-and-forget），任务完成后状态会落到
+///    `overage_enabled` / `overage_last_error`，前端再次打开页面可以看到。
+pub async fn enable_overage_sse(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+
+    match state.service.try_begin_overage_task(id) {
+        Ok(true) => {
+            let manager = state.service.token_manager_arc();
+            let stream = overage::start_overage_stream(manager, id).map(|event| {
+                Event::default()
+                    .json_data(&event)
+                    .or_else(|_| Ok::<Event, std::convert::Infallible>(Event::default()))
+            });
+            Sse::new(stream)
+                .keep_alive(axum::response::sse::KeepAlive::default())
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "overage 任务正在进行中，请稍后再试或刷新查看状态",
+                "credentialId": id,
+            })),
+        )
+            .into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

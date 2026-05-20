@@ -377,10 +377,7 @@ impl KiroProvider {
             // Content-Type is endpoint-specific (CLI: application/x-amz-json-1.0,
             // IDE: application/json). Let decorate_mcp set it; reqwest's .header()
             // APPENDS on duplicate keys (we don't want two Content-Type values).
-            let base_request = client
-                .post(&url)
-                .body(body)
-                .header("Connection", "close");
+            let base_request = client.post(&url).body(body).header("Connection", "close");
             let request = endpoint.decorate_mcp(base_request, &request_ctx);
             #[cfg(feature = "sensitive-logs")]
             let _request_for_log = request.try_clone();
@@ -1433,8 +1430,19 @@ mod tests {
 
         // envState injected on currentMessage and on every history user turn.
         let cur_ctx = &cur_uim["userInputMessageContext"];
-        assert_eq!(cur_ctx["envState"]["operatingSystem"].as_str().unwrap().len() > 0, true);
-        assert!(cur_ctx["envState"]["currentWorkingDirectory"].as_str().is_some());
+        assert_eq!(
+            cur_ctx["envState"]["operatingSystem"]
+                .as_str()
+                .unwrap()
+                .len()
+                > 0,
+            true
+        );
+        assert!(
+            cur_ctx["envState"]["currentWorkingDirectory"]
+                .as_str()
+                .is_some()
+        );
 
         let h0_ctx = &cs["history"][0]["userInputMessage"]["userInputMessageContext"];
         assert!(h0_ctx["envState"].is_object());
@@ -1442,7 +1450,10 @@ mod tests {
         // Idempotency: running transform_api_body twice doesn't double-wrap.
         let second = endpoint.transform_api_body(&result, &ctx).unwrap();
         let second_parsed: serde_json::Value = serde_json::from_str(&second).unwrap();
-        let second_content = second_parsed["conversationState"]["currentMessage"]["userInputMessage"]["content"].as_str().unwrap();
+        let second_content =
+            second_parsed["conversationState"]["currentMessage"]["userInputMessage"]["content"]
+                .as_str()
+                .unwrap();
         assert_eq!(
             second_content.matches("--- USER MESSAGE BEGIN ---").count(),
             1,
@@ -1470,15 +1481,22 @@ mod tests {
         use crate::kiro::model::requests::conversation::{
             ConversationState, CurrentMessage, Message, UserInputMessage,
         };
-        let cur = CurrentMessage::new(UserInputMessage::new("hi", "claude-sonnet-4").with_origin("AI_EDITOR"));
+        let cur = CurrentMessage::new(
+            UserInputMessage::new("hi", "claude-sonnet-4").with_origin("AI_EDITOR"),
+        );
         let state = ConversationState::new("c1")
-            .with_history(vec![Message::user("h", "claude-sonnet-4"), Message::assistant("ack")])
+            .with_history(vec![
+                Message::user("h", "claude-sonnet-4"),
+                Message::assistant("ack"),
+            ])
             .with_current_message(cur)
             .with_chat_trigger_type("MANUAL")
             .with_agent_continuation_id("ac1")
             .with_agent_task_type("vibe");
         let body = serde_json::json!({"conversationState": state, "profileArn": "arn:x"});
-        let result = endpoint.transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx).unwrap();
+        let result = endpoint
+            .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
+            .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let cs = &parsed["conversationState"];
         let keys: Vec<&str> = cs.as_object().unwrap().keys().map(|s| s.as_str()).collect();
@@ -1497,7 +1515,11 @@ mod tests {
             "conversationState field order must match kiro-cli golden capture"
         );
         let cur_keys: Vec<&str> = cs["currentMessage"]["userInputMessage"]
-            .as_object().unwrap().keys().map(|s| s.as_str()).collect();
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(
             cur_keys,
             vec!["content", "userInputMessageContext", "origin", "modelId"],
@@ -1554,9 +1576,8 @@ mod tests {
             .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        let props = &parsed["conversationState"]["currentMessage"]["userInputMessage"]
-            ["userInputMessageContext"]["tools"][0]["toolSpecification"]["inputSchema"]["json"]
-            ["properties"];
+        let props = &parsed["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"]
+            ["tools"][0]["toolSpecification"]["inputSchema"]["json"]["properties"];
         // User-defined schema properties must be preserved verbatim.
         assert_eq!(
             props["origin"],

@@ -214,7 +214,10 @@ impl EnvState {
             .ok()
             .and_then(|p| p.to_str().map(String::from))
             .unwrap_or_default();
-        Self { operating_system, current_working_directory }
+        Self {
+            operating_system,
+            current_working_directory,
+        }
     }
 }
 

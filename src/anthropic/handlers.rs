@@ -592,6 +592,7 @@ fn mask_user_id(user_id: Option<&str>) -> String {
 ///
 /// 说明：
 /// - Claude Code/claude-cli 在某些 tool_use-only 场景下可能会把空 text block 写回 history；
+///
 /// 从 assistant 文本中提取 `<thinking>...</thinking>` XML 标签作为独立 thinking 块。
 ///
 /// Q 上游对非流式请求把推理嵌在 assistantResponseEvent 文本里（不发独立的
@@ -620,7 +621,11 @@ fn extract_thinking_xml(text: &str) -> (String, String) {
         // 标签前的内容保留到 cleaned
         cleaned.push_str(&text[cursor..open_abs]);
         // 标签内容（trim 两端换行）追加到 thinking_parts
-        thinking_parts.push(text[content_start..close_abs].trim_matches('\n').to_string());
+        thinking_parts.push(
+            text[content_start..close_abs]
+                .trim_matches('\n')
+                .to_string(),
+        );
 
         cursor = close_abs + CLOSE.len();
         // 吞掉标签后紧跟的两个换行（模型常用 `</thinking>\n\n` 作分隔符）
@@ -1574,10 +1579,10 @@ async fn handle_non_stream_request(
                             );
                             metering = Some(event_metering);
                         }
-                        Event::Exception { exception_type, .. } => {
-                            if exception_type == "ContentLengthExceededException" {
-                                stop_reason = "max_tokens".to_string();
-                            }
+                        Event::Exception { exception_type, .. }
+                            if exception_type == "ContentLengthExceededException" =>
+                        {
+                            stop_reason = "max_tokens".to_string();
                         }
                         _ => {}
                     }
@@ -1771,7 +1776,7 @@ pub async fn count_tokens(
     ) as i32;
 
     Json(CountTokensResponse {
-        input_tokens: total_tokens.max(1) as i32,
+        input_tokens: total_tokens.max(1),
     })
 }
 

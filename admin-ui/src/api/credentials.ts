@@ -8,6 +8,10 @@ import type {
   SetDisabledRequest,
   SetPriorityRequest,
   SetEndpointRequest,
+  SetIdpRequest,
+  SetCredentialProxyRequest,
+  OverageStatusResponse,
+  OverageEvent,
   AddCredentialRequest,
   AddCredentialResponse,
   CredentialStatsResponse,
@@ -98,6 +102,109 @@ export async function setCredentialEndpoint(
     { endpoint } as SetEndpointRequest
   )
   return data
+}
+
+// 设置凭据级 Web Portal Idp
+export async function setCredentialIdp(
+  id: number,
+  idp: string | null
+): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>(
+    `/credentials/${id}/idp`,
+    { idp } as SetIdpRequest
+  )
+  return data
+}
+
+// 设置凭据级代理
+export async function setCredentialProxy(
+  id: number,
+  req: SetCredentialProxyRequest
+): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>(`/credentials/${id}/proxy`, req)
+  return data
+}
+
+// 读取凭据 overage 状态（不触发开启）
+export async function getOverageStatus(id: number): Promise<OverageStatusResponse> {
+  const { data } = await api.get<OverageStatusResponse>(`/credentials/${id}/overage`)
+  return data
+}
+
+/**
+ * 开启凭据超额（SSE 流）
+ *
+ * 用 fetch + ReadableStream 实现，而不是浏览器原生 EventSource——后者不能
+ * 自定义请求头，而 admin 中间件只认 `x-api-key` 头 + `Authorization: Bearer`。
+ *
+ * 服务端是 fire-and-forget：客户端断开（调用返回的 close）不会取消后台任务，
+ * 任务跑完后状态会落到 `overage_enabled` / `overage_last_error`，下次打开
+ * 对话框可以从 `getOverageStatus` 拉到。
+ *
+ * 收到 `done` / `error` 后内部会自动 abort，无需调用方再 close；调用方主动
+ * close 也是安全的（重复 abort 是幂等的）。
+ */
+export function openOverageEnableStream(
+  id: number,
+  onEvent: (event: OverageEvent) => void,
+  onError?: (err: unknown) => void
+): { close: () => void } {
+  // 优先用 fetch + stream，避免依赖 EventSource 的 header 限制
+  const controller = new AbortController()
+  const apiKey = storage.getApiKey() || ''
+
+  fetch(`/api/admin/credentials/${id}/overage/enable`, {
+    method: 'GET',
+    headers: {
+      Accept: 'text/event-stream',
+      'x-api-key': apiKey,
+    },
+    signal: controller.signal,
+  })
+    .then(async (resp) => {
+      if (!resp.ok || !resp.body) {
+        const text = await resp.text().catch(() => '')
+        onError?.(new Error(`overage 流打开失败 ${resp.status}: ${text}`))
+        return
+      }
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+      // 简单 SSE 解析：按 \n\n 分块，取每块以 "data:" 开头的行
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let sep
+        while ((sep = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, sep)
+          buffer = buffer.slice(sep + 2)
+          const dataLines = block
+            .split('\n')
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(5).trimStart())
+          if (dataLines.length === 0) continue
+          const payload = dataLines.join('\n')
+          try {
+            const event = JSON.parse(payload) as OverageEvent
+            onEvent(event)
+            if (event.kind === 'done' || event.kind === 'error') {
+              controller.abort()
+              return
+            }
+          } catch (e) {
+            onError?.(e)
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if ((err as { name?: string })?.name !== 'AbortError') {
+        onError?.(err)
+      }
+    })
+
+  return { close: () => controller.abort() }
 }
 
 // 强制刷新 Token

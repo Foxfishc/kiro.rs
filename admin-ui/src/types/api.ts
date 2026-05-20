@@ -36,7 +36,6 @@ export interface CredentialStatusItem {
   successCount: number
   lastUsedAt: string | null
   hasProxy: boolean
-  proxyUrl?: string
   /** 凭据级 Region（用于 Token 刷新） */
   region: string | null
   /** 凭据级 API Region（单独覆盖 API 请求） */
@@ -45,6 +44,20 @@ export interface CredentialStatusItem {
   endpoint?: string | null
   /** 最终生效的 endpoint */
   effectiveEndpoint: string
+  /** Web Portal Idp 标识（默认推断为 Google） */
+  idp?: string | null
+  /** 凭据级代理 URL（null 表示回退到全局代理；"direct" 表示显式直连） */
+  proxyUrl?: string | null
+  /** 凭据级代理用户名 */
+  proxyUsername?: string | null
+  /** 是否设置了凭据级代理密码（不返回明文） */
+  hasProxyPassword?: boolean
+  /** 最近一次已知的超额开关状态（null 表示未知） */
+  overageEnabled?: boolean | null
+  /** 是否正在执行后台开启超额任务 */
+  overageEnabling?: boolean
+  /** 最近一次开启超额失败原因 */
+  overageLastError?: string | null
 }
 
 // 余额响应
@@ -131,6 +144,34 @@ export interface SetPriorityRequest {
 export interface SetEndpointRequest {
   endpoint: string | null
 }
+
+export interface SetIdpRequest {
+  idp: string | null
+}
+
+export interface SetCredentialProxyRequest {
+  proxyUrl: string | null
+  proxyUsername?: string | null
+  proxyPassword?: string | null
+}
+
+export interface OverageStatusResponse {
+  id: number
+  enabled: boolean | null
+  enabling: boolean
+  lastError: string | null
+  hasProfileArn: boolean
+  authMethod: string | null
+}
+
+export type OverageEvent =
+  | { kind: 'prepared'; idp: string; hasProfileArn: boolean }
+  | { kind: 'submittingUpdate' }
+  | { kind: 'updateAccepted' }
+  | { kind: 'pollingStarted'; intervalMs: number; timeoutMs: number }
+  | { kind: 'pollTick'; attempt: number; overageEnabled: boolean | null; elapsedMs: number }
+  | { kind: 'done'; overageEnabled: boolean }
+  | { kind: 'error'; message: string }
 
 // 添加凭据请求
 export interface AddCredentialRequest {
