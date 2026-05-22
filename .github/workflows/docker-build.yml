@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_NAME: myuan6/kiro-rs
+  IMAGE_NAME: foxfishs/kiro-rs
 
 jobs:
   build_and_push:

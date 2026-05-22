@@ -22,7 +22,7 @@
 - **Thinking 兼容增强**：`claude-opus-4-7-thinking` 与 `claude-opus-4-6-thinking` 一样走 adaptive thinking；客户端即使选择不带 `-thinking` 的模型，只要请求带 `thinking` 参数也会启用思考。
 - **Release 与 Docker Hub 自动构建**：保留多平台二进制 release workflow，并在 push tag `v*` 时自动构建 Docker Hub 镜像。
 
-镜像：`myuan6/kiro-rs:latest`（不含本次修复的请用上游镜像 `ghcr.io/hank9999/kiro-rs:latest`）。
+镜像：`foxfishs/kiro-rs:latest`（不含本次修复的请用上游镜像 `ghcr.io/hank9999/kiro-rs:latest`）。
 
 ---
 
@@ -247,9 +247,9 @@ curl http://127.0.0.1:8990/v1/messages \
 本 fork 的镜像发布在 Docker Hub：
 
 ```bash
-docker pull myuan6/kiro-rs:latest
+docker pull foxfishs/kiro-rs:latest
 # 或指定版本
-docker pull myuan6/kiro-rs:v1.1.32
+docker pull foxfishs/kiro-rs:v1.1.32
 ```
 
 支持 `linux/amd64` 和 `linux/arm64` 双架构，每次 push tag `v*` 时由 GitHub Actions 自动构建。构建依赖仓库 Secrets：
@@ -285,7 +285,7 @@ docker buildx build \
 docker compose up -d
 ```
 
-> 注意：仓库自带的 `docker-compose.yml` 默认拉取 `ghcr.io/hank9999/kiro-rs:latest`（**不含本 fork 的修复**）。要用 fork 版镜像，把 `image:` 改为 `myuan6/kiro-rs:latest`，或改用 `build: .` 本地构建。
+> 注意：仓库自带的 `docker-compose.yml` 默认拉取 `ghcr.io/hank9999/kiro-rs:latest`（**不含本 fork 的修复**）。要用 fork 版镜像，把 `image:` 改为 `foxfishs/kiro-rs:latest`，或改用 `build: .` 本地构建。
 
 **本地构建**
 
