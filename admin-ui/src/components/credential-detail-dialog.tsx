@@ -214,28 +214,30 @@ export function CredentialDetailDialog({
     streamRef.current = handle
   }
 
-  const overageEnabled = overageStatus?.enabled ?? credential.overageEnabled ?? null
-  const overageCap = 10000
-  const effectiveBalanceBaseLimit = effectiveBalance?.usageLimit ?? 0
+  const overageEnabled = overageStatus?.enabled ?? effectiveBalance?.overageEnabled ?? cachedBalance?.overageEnabled ?? credential.overageEnabled ?? null
+  const effectiveBalanceTotalLimit = effectiveBalance?.usageLimit ?? 0
+  const effectiveBalanceOverageCap = effectiveBalance?.overageEnabled ? (effectiveBalance.overageCap ?? 0) : 0
+  const effectiveBalanceBaseLimit = effectiveBalance?.overageEnabled
+    ? Math.max(0, effectiveBalanceTotalLimit - effectiveBalanceOverageCap)
+    : effectiveBalanceTotalLimit
   const effectiveBalanceUsed = effectiveBalance?.currentUsage ?? 0
-  const effectiveBalanceTotalLimit = overageEnabled
-    ? effectiveBalanceBaseLimit + overageCap
-    : effectiveBalanceBaseLimit
   const effectiveBalancePercentage = effectiveBalanceTotalLimit > 0
     ? (effectiveBalanceUsed / effectiveBalanceTotalLimit) * 100
     : 0
-  const effectiveBalanceRemaining = effectiveBalanceTotalLimit - effectiveBalanceUsed
+  const effectiveBalanceRemaining = effectiveBalance?.remaining ?? Math.max(0, effectiveBalanceTotalLimit - effectiveBalanceUsed)
   const effectiveOverageUsed = Math.max(0, effectiveBalanceUsed - effectiveBalanceBaseLimit)
   const effectiveOverageCost = effectiveOverageUsed * 0.04
-  const cachedBalanceUsed = cachedBalance ? cachedBalance.usageLimit - cachedBalance.remaining : 0
-  const cachedBalanceTotalLimit = cachedBalance
-    ? (overageEnabled ? cachedBalance.usageLimit + overageCap : cachedBalance.usageLimit)
-    : 0
+  const cachedBalanceTotalLimit = cachedBalance?.usageLimit ?? 0
+  const cachedBalanceOverageCap = cachedBalance?.overageEnabled ? (cachedBalance.overageCap ?? 0) : 0
+  const cachedBalanceBaseLimit = cachedBalance?.overageEnabled
+    ? Math.max(0, cachedBalanceTotalLimit - cachedBalanceOverageCap)
+    : cachedBalanceTotalLimit
+  const cachedBalanceUsed = cachedBalance ? Math.max(0, cachedBalanceTotalLimit - cachedBalance.remaining) : 0
   const cachedBalancePercentage = cachedBalanceTotalLimit > 0
     ? (cachedBalanceUsed / cachedBalanceTotalLimit) * 100
     : 0
-  const cachedBalanceRemaining = cachedBalanceTotalLimit - cachedBalanceUsed
-  const cachedOverageUsed = cachedBalance ? Math.max(0, cachedBalanceUsed - cachedBalance.usageLimit) : 0
+  const cachedBalanceRemaining = cachedBalance?.remaining ?? Math.max(0, cachedBalanceTotalLimit - cachedBalanceUsed)
+  const cachedOverageUsed = cachedBalance ? Math.max(0, cachedBalanceUsed - cachedBalanceBaseLimit) : 0
   const cachedOverageCost = cachedOverageUsed * 0.04
 
   // 格式化过期时间
@@ -478,11 +480,11 @@ export function CredentialDetailDialog({
                   <div className="space-y-1 rounded border bg-purple-50/70 p-2 text-xs dark:bg-purple-950/20">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">总额度</span>
-                      <span className="font-medium">基础 ${formatNumber(effectiveBalanceBaseLimit)} + 超额 ${formatNumber(overageCap)}</span>
+                      <span className="font-medium">基础 ${formatNumber(effectiveBalanceBaseLimit)} + 超额 ${formatNumber(effectiveBalanceOverageCap)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">超额用量</span>
-                      <span className="font-medium">${formatNumber(effectiveOverageUsed)} / ${formatNumber(overageCap)}{effectiveOverageUsed > 0 ? `，$${formatNumber(effectiveOverageCost)}` : ''}</span>
+                      <span className="font-medium">${formatNumber(effectiveOverageUsed)} / ${formatNumber(effectiveBalanceOverageCap)}{effectiveOverageUsed > 0 ? `，$${formatNumber(effectiveOverageCost)}` : ''}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">剩余额度</span>
@@ -518,11 +520,11 @@ export function CredentialDetailDialog({
                   <div className="space-y-1 rounded border bg-purple-50/70 p-2 text-xs dark:bg-purple-950/20">
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">总额度</span>
-                      <span className="font-medium">基础 ${formatNumber(cachedBalance.usageLimit)} + 超额 ${formatNumber(overageCap)}</span>
+                      <span className="font-medium">基础 ${formatNumber(cachedBalanceBaseLimit)} + 超额 ${formatNumber(cachedBalanceOverageCap)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">超额用量</span>
-                      <span className="font-medium">${formatNumber(cachedOverageUsed)} / ${formatNumber(overageCap)}{cachedOverageUsed > 0 ? `，$${formatNumber(cachedOverageCost)}` : ''}</span>
+                      <span className="font-medium">${formatNumber(cachedOverageUsed)} / ${formatNumber(cachedBalanceOverageCap)}{cachedOverageUsed > 0 ? `，$${formatNumber(cachedOverageCost)}` : ''}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">剩余额度</span>

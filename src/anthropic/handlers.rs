@@ -37,7 +37,7 @@ use super::middleware::AppState;
 use super::stream::{CacheUsageBreakdown, SseEvent, StreamContext};
 use super::types::{
     CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
-    OutputConfig, Thinking,
+    Thinking,
 };
 use super::websearch;
 
@@ -1703,8 +1703,9 @@ async fn handle_non_stream_request(
 /// 若模型名没有 thinking 后缀但客户端发送了 thinking 参数，则使用客户端 budget_tokens。
 /// 如果客户端未设置有效预算，或预算 <= 0，则默认使用 high（24576）。
 ///
-/// - Opus/Sonnet 4.6 与 Opus 4.7：覆写为 adaptive 类型
-/// - 其他模型：覆写为 enabled 类型
+/// - Opus 4.7 官方只支持 adaptive thinking：不能使用 `enabled + budget_tokens` 手动预算
+/// - Opus/Sonnet 4.6 仍兼容 `enabled + budget_tokens`，但官方已标记 deprecated
+/// - 裸 `-thinking` 模型后缀：强制开启 thinking；Opus 4.7 走 adaptive + high effort，其它模型走 enabled + budget
 fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     let model_lower = payload.model.to_lowercase();
 
@@ -1718,37 +1719,23 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         Some(24576)
     } else if model_lower.ends_with("-thinking-xhigh") {
         Some(32768)
-    } else if model_lower.ends_with("-thinking") {
-        Some(20000)
     } else {
         None
     };
+    let has_model_thinking_suffix = suffix_budget_tokens.is_some() || model_lower.ends_with("-thinking");
 
     let client_budget_tokens = payload.thinking.as_ref().map(|t| t.budget_tokens);
     let budget_tokens = if let Some(tokens) = suffix_budget_tokens {
         tokens
-    } else if payload.thinking.is_some() {
+    } else if has_model_thinking_suffix || payload.thinking.is_some() {
         client_budget_tokens.filter(|tokens| *tokens > 0).unwrap_or(24576)
     } else {
         return;
     };
 
-    let uses_adaptive_thinking = if model_lower.contains("opus") {
-        model_lower.contains("4-6")
-            || model_lower.contains("4.6")
-            || model_lower.contains("4-7")
-            || model_lower.contains("4.7")
-    } else if model_lower.contains("sonnet") {
-        model_lower.contains("4-6") || model_lower.contains("4.6")
-    } else {
-        false
-    };
-
-    let thinking_type = if uses_adaptive_thinking {
-        "adaptive"
-    } else {
-        "enabled"
-    };
+    let is_opus_47 = model_lower.contains("opus")
+        && (model_lower.contains("4-7") || model_lower.contains("4.7"));
+    let thinking_type = if is_opus_47 { "adaptive" } else { "enabled" };
 
     tracing::info!(
         model = %payload.model,
@@ -1763,8 +1750,8 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         budget_tokens,
     });
 
-    if uses_adaptive_thinking {
-        payload.output_config = Some(OutputConfig {
+    if is_opus_47 {
+        payload.output_config = Some(super::types::OutputConfig {
             effort: "high".to_string(),
         });
     }
@@ -2155,7 +2142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_opus_4_7_thinking_uses_same_adaptive_mode_as_opus_4_6_thinking() {
+    fn test_opus_4_7_thinking_suffix_uses_adaptive_mode_because_enabled_is_unsupported() {
         let mut opus_46 = sample_messages_request();
         opus_46.model = "claude-opus-4-6-thinking".to_string();
         override_thinking_from_model_name(&mut opus_46);
@@ -2165,21 +2152,18 @@ mod tests {
         override_thinking_from_model_name(&mut opus_47);
 
         assert_eq!(
-            opus_47.thinking.as_ref().map(|t| t.thinking_type.as_str()),
-            opus_46.thinking.as_ref().map(|t| t.thinking_type.as_str())
-        );
-        assert_eq!(
-            opus_47.thinking.as_ref().map(|t| t.budget_tokens),
-            opus_46.thinking.as_ref().map(|t| t.budget_tokens)
-        );
-        assert_eq!(
-            opus_47.output_config.as_ref().map(|c| c.effort.as_str()),
-            opus_46.output_config.as_ref().map(|c| c.effort.as_str())
+            opus_46.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("enabled")
         );
         assert_eq!(
             opus_47.thinking.as_ref().map(|t| t.thinking_type.as_str()),
             Some("adaptive")
         );
+        assert_eq!(
+            opus_47.thinking.as_ref().map(|t| t.budget_tokens),
+            opus_46.thinking.as_ref().map(|t| t.budget_tokens)
+        );
+        assert!(opus_46.output_config.is_none());
         assert_eq!(
             opus_47.output_config.as_ref().map(|c| c.effort.as_str()),
             Some("high")
@@ -2187,7 +2171,56 @@ mod tests {
     }
 
     #[test]
-    fn test_client_thinking_enables_adaptive_for_opus_4_6_without_thinking_suffix() {
+    fn test_opus_4_7_thinking_suffix_uses_client_budget_or_defaults_to_high() {
+        let mut payload = sample_messages_request();
+        payload.model = "claude-opus-4-7-thinking".to_string();
+        payload.thinking = Some(Thinking {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 8192,
+        });
+        payload.output_config = None;
+
+        override_thinking_from_model_name(&mut payload);
+
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            payload.thinking.as_ref().map(|t| t.budget_tokens),
+            Some(8192)
+        );
+        assert_eq!(
+            payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("high")
+        );
+
+        let mut default_payload = sample_messages_request();
+        default_payload.model = "claude-opus-4-7-thinking".to_string();
+        default_payload.thinking = None;
+        default_payload.output_config = None;
+
+        override_thinking_from_model_name(&mut default_payload);
+
+        assert_eq!(
+            default_payload
+                .thinking
+                .as_ref()
+                .map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
+            default_payload.thinking.as_ref().map(|t| t.budget_tokens),
+            Some(24576)
+        );
+        assert_eq!(
+            default_payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn test_client_thinking_forces_enabled_for_opus_4_6_without_thinking_suffix() {
         let mut payload = sample_messages_request();
         payload.model = "claude-opus-4-6".to_string();
         payload.thinking = Some(Thinking {
@@ -2200,16 +2233,13 @@ mod tests {
 
         assert_eq!(
             payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
-            Some("adaptive")
+            Some("enabled")
         );
         assert_eq!(
             payload.thinking.as_ref().map(|t| t.budget_tokens),
             Some(1024)
         );
-        assert_eq!(
-            payload.output_config.as_ref().map(|c| c.effort.as_str()),
-            Some("high")
-        );
+        assert!(payload.output_config.is_none());
     }
 
     #[test]
@@ -2226,16 +2256,13 @@ mod tests {
 
         assert_eq!(
             payload.thinking.as_ref().map(|t| t.thinking_type.as_str()),
-            Some("adaptive")
+            Some("enabled")
         );
         assert_eq!(
             payload.thinking.as_ref().map(|t| t.budget_tokens),
             Some(24576)
         );
-        assert_eq!(
-            payload.output_config.as_ref().map(|c| c.effort.as_str()),
-            Some("high")
-        );
+        assert!(payload.output_config.is_none());
     }
 
     #[test]
