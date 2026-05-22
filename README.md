@@ -20,7 +20,7 @@
 - **Overage-aware 余额与自动禁用**：余额展示、缓存与自动禁用逻辑使用“基础额度 + 超额额度”的有效额度；上游未返回 `overageEnabled` 时不会误判为关闭。
 - **Admin 详情页白屏修复与全局模型列表**：修复凭据详情渲染问题；固定 `/v1/models` 能力列表不再在每个凭据详情重复显示，改为 Admin 顶部全局“可用模型”。
 - **Thinking 兼容增强**：`claude-opus-4-7-thinking` 与 `claude-opus-4-6-thinking` 一样走 adaptive thinking；客户端即使选择不带 `-thinking` 的模型，只要请求带 `thinking` 参数也会启用思考。
-- **CI 简化**：删除 Linux/macOS/Windows 二进制 release workflow，仅保留 Docker Hub 自动构建（push tag `v*` 触发）。
+- **Release 与 Docker Hub 自动构建**：保留多平台二进制 release workflow，并在 push tag `v*` 时自动构建 Docker Hub 镜像。
 
 镜像：`myuan6/kiro-rs:latest`（不含本次修复的请用上游镜像 `ghcr.io/hank9999/kiro-rs:latest`）。
 
@@ -191,7 +191,31 @@ docker pull myuan6/kiro-rs:latest
 docker pull myuan6/kiro-rs:v1.1.31
 ```
 
-支持 `linux/amd64` 和 `linux/arm64` 双架构，每次 push tag `v*` 时由 GitHub Actions 自动构建。
+支持 `linux/amd64` 和 `linux/arm64` 双架构，每次 push tag `v*` 时由 GitHub Actions 自动构建。构建依赖仓库 Secrets：
+
+- `DOCKERHUB_USERNAME`：Docker Hub 用户名
+- `DOCKERHUB_TOKEN`：Docker Hub Access Token
+
+手动本地构建并推送示例：
+
+```bash
+# 登录 Docker Hub
+docker login
+
+# 单平台本地构建
+docker build -t <你的DockerHub用户名>/kiro-rs:latest .
+docker push <你的DockerHub用户名>/kiro-rs:latest
+
+# 多平台构建并推送（推荐）
+docker buildx create --use --name kiro-rs-builder 2>/dev/null || docker buildx use kiro-rs-builder
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t <你的DockerHub用户名>/kiro-rs:latest \
+  -t <你的DockerHub用户名>/kiro-rs:v1.1.31 \
+  --push .
+```
+
+如果使用 GitHub Actions 自动构建，只需要在 GitHub 仓库 Settings → Secrets and variables → Actions 中配置上面两个 Docker Hub secret，然后推送 `v*` tag。
 
 **docker-compose 方式**
 
