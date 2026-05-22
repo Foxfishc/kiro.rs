@@ -93,7 +93,7 @@
 
 如果不需要改代码，推荐直接从 Release 下载预编译二进制文件：
 
-[https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.32](https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.32)
+[https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.33](https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.33)
 
 根据系统下载对应文件：
 
@@ -107,7 +107,7 @@ Linux 解压并运行：
 
 ```bash
 curl -L -o kiro-rs-linux-x86_64.tar.gz \
-  https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.32/kiro-rs-linux-x86_64.tar.gz
+  https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.33/kiro-rs-linux-x86_64.tar.gz
 
 tar -xzf kiro-rs-linux-x86_64.tar.gz
 cd kiro-rs-linux-x86_64
@@ -119,7 +119,7 @@ macOS Apple Silicon 解压并运行：
 
 ```bash
 curl -L -o kiro-rs-macos-aarch64.tar.gz \
-  https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.32/kiro-rs-macos-aarch64.tar.gz
+  https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.33/kiro-rs-macos-aarch64.tar.gz
 
 tar -xzf kiro-rs-macos-aarch64.tar.gz
 cd kiro-rs-macos-aarch64
@@ -137,7 +137,7 @@ Windows 解压并运行 PowerShell 示例：
 
 ```powershell
 Invoke-WebRequest `
-  -Uri "https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.32/kiro-rs-windows-x86_64.zip" `
+  -Uri "https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.33/kiro-rs-windows-x86_64.zip" `
   -OutFile "kiro-rs-windows-x86_64.zip"
 
 Expand-Archive -Path "kiro-rs-windows-x86_64.zip" -DestinationPath "." -Force
@@ -249,7 +249,7 @@ curl http://127.0.0.1:8990/v1/messages \
 ```bash
 docker pull foxfishs/kiro-rs:latest
 # 或指定版本
-docker pull foxfishs/kiro-rs:v1.1.32
+docker pull foxfishs/kiro-rs:v1.1.33
 ```
 
 支持 `linux/amd64` 和 `linux/arm64` 双架构，每次 push tag `v*` 时由 GitHub Actions 自动构建。构建依赖仓库 Secrets：
@@ -272,7 +272,7 @@ docker buildx create --use --name kiro-rs-builder 2>/dev/null || docker buildx u
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -t <你的DockerHub用户名>/kiro-rs:latest \
-  -t <你的DockerHub用户名>/kiro-rs:v1.1.32 \
+  -t <你的DockerHub用户名>/kiro-rs:v1.1.33 \
   --push .
 ```
 

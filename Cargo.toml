@@ -1,6 +1,6 @@
 [package]
 name = "kiro-rs"
-version = "1.1.32"
+version = "1.1.33"
 edition = "2024"
 license = "MIT"
 description = "Anthropic Claude API 兼容的 Kiro 代理服务，支持多凭据、自动故障转移、流式响应和 Web 管理界面"
