@@ -1,0 +1,136 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build/upload, e.g. v1.1.32"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag || '' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: kiro-rs-linux-x86_64
+            binary_name: kiro-rs
+            archive_ext: tar.gz
+          - os: macos-latest
+            asset_name: kiro-rs-macos-aarch64
+            binary_name: kiro-rs
+            archive_ext: tar.gz
+          - os: windows-latest
+            asset_name: kiro-rs-windows-x86_64
+            binary_name: kiro-rs.exe
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Admin UI
+        shell: bash
+        run: |
+          cd admin-ui
+          npm install
+          npm run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build binary
+        run: cargo build --release
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/${{ matrix.asset_name }}
+          cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}/
+          cp README.md LICENSE config.example.json dist/${{ matrix.asset_name }}/ 2>/dev/null || true
+          tar -czf dist/${{ matrix.asset_name }}.tar.gz -C dist ${{ matrix.asset_name }}
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/${{ matrix.asset_name }}" | Out-Null
+          Copy-Item "target/release/${{ matrix.binary_name }}" "dist/${{ matrix.asset_name }}/"
+          Copy-Item "README.md" "dist/${{ matrix.asset_name }}/"
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" "dist/${{ matrix.asset_name }}/" }
+          if (Test-Path "config.example.json") { Copy-Item "config.example.json" "dist/${{ matrix.asset_name }}/" }
+          Compress-Archive -Path "dist/${{ matrix.asset_name }}/*" -DestinationPath "dist/${{ matrix.asset_name }}.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+  source:
+    name: Package source code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Package source archive
+        shell: bash
+        run: |
+          TAG_NAME="${{ inputs.tag || github.ref_name }}"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="kiro-rs-${TAG_NAME}/" -o "dist/kiro-rs-${TAG_NAME}-source.tar.gz" HEAD
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiro-rs-source
+          path: dist/kiro-rs-*-source.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build, source]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
