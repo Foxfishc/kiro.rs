@@ -93,7 +93,7 @@
 
 如果不需要改代码，推荐直接从 Release 下载预编译二进制文件：
 
-[https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.33](https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.33)
+[https://github.com/Foxfishc/kiro.rs/releases/](https://github.com/Foxfishc/kiro.rs/releases/)
 
 根据系统下载对应文件：
 
