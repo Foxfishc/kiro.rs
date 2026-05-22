@@ -60,10 +60,11 @@
 
 - [Fork 与上游区别](#fork-与上游区别)
 - [开始](#开始)
-  - [1. 编译](#1-编译)
-  - [2. 最小配置](#2-最小配置)
-  - [3. 启动](#3-启动)
-  - [4. 验证](#4-验证)
+  - [1. 下载预编译二进制文件](#1-下载预编译二进制文件)
+  - [2. 从源码编译](#2-从源码编译)
+  - [3. 最小配置](#3-最小配置)
+  - [4. 启动](#4-启动)
+  - [5. 验证](#5-验证)
   - [Docker](#docker)
 - [配置详解](#配置详解)
   - [config.json](#configjson)
@@ -88,9 +89,69 @@
 
 ## 开始
 
-### 1. 编译
+### 1. 下载预编译二进制文件
 
-> PS: 如果不想编辑可以直接前往 Release 下载二进制文件
+如果不需要改代码，推荐直接从 Release 下载预编译二进制文件：
+
+[https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.32](https://github.com/Foxfishc/kiro.rs/releases/tag/v1.1.32)
+
+根据系统下载对应文件：
+
+- Linux x86_64：`kiro-rs-linux-x86_64.tar.gz`
+- macOS Apple Silicon / aarch64：`kiro-rs-macos-aarch64.tar.gz`
+- Windows x86_64：`kiro-rs-windows-x86_64.zip`
+
+> macOS 当前提供 Apple Silicon / aarch64 版本。如果你是 Intel Mac，需要暂时从源码编译。
+
+Linux 解压并运行：
+
+```bash
+curl -L -o kiro-rs-linux-x86_64.tar.gz \
+  https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.32/kiro-rs-linux-x86_64.tar.gz
+
+tar -xzf kiro-rs-linux-x86_64.tar.gz
+cd kiro-rs-linux-x86_64
+chmod +x kiro-rs
+./kiro-rs -c /path/to/config.json --credentials /path/to/credentials.json
+```
+
+macOS Apple Silicon 解压并运行：
+
+```bash
+curl -L -o kiro-rs-macos-aarch64.tar.gz \
+  https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.32/kiro-rs-macos-aarch64.tar.gz
+
+tar -xzf kiro-rs-macos-aarch64.tar.gz
+cd kiro-rs-macos-aarch64
+chmod +x kiro-rs
+./kiro-rs -c /path/to/config.json --credentials /path/to/credentials.json
+```
+
+如果 macOS 提示来自未知开发者，可以执行：
+
+```bash
+xattr -dr com.apple.quarantine ./kiro-rs
+```
+
+Windows 解压并运行 PowerShell 示例：
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://github.com/Foxfishc/kiro.rs/releases/download/v1.1.32/kiro-rs-windows-x86_64.zip" `
+  -OutFile "kiro-rs-windows-x86_64.zip"
+
+Expand-Archive -Path "kiro-rs-windows-x86_64.zip" -DestinationPath "." -Force
+cd kiro-rs-windows-x86_64
+.\kiro-rs.exe -c C:\path\to\config.json --credentials C:\path\to\credentials.json
+```
+
+你也可以把二进制放进系统 PATH，然后在任意目录运行：
+
+```bash
+kiro-rs -c /path/to/config.json --credentials /path/to/credentials.json
+```
+
+### 2. 从源码编译
 
 > **前置步骤**：编译前需要先构建前端 Admin UI（用于嵌入到二进制中）：
 > ```bash
@@ -101,7 +162,7 @@
 cargo build --release
 ```
 
-### 2. 最小配置
+### 3. 最小配置
 
 创建 `config.json`：
 
@@ -139,7 +200,7 @@ IdC 认证：
 }
 ```
 
-### 3. 启动
+### 4. 启动
 
 生产/嵌入式 Admin UI：
 
@@ -163,7 +224,7 @@ make dev
 ./target/release/kiro-rs -c /path/to/config.json --credentials /path/to/credentials.json
 ```
 
-### 4. 验证
+### 5. 验证
 
 ```bash
 curl http://127.0.0.1:8990/v1/messages \
