@@ -12,7 +12,22 @@ use super::types::{CacheControl, Message, MessagesRequest};
 
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 const ONE_HOUR_CACHE_TTL: Duration = Duration::from_secs(3600);
-const PREFIX_LOOKBACK_LIMIT: usize = 10;
+const PREFIX_LOOKBACK_LIMIT: usize = 15;
+
+// 非缓存输入保留量上限（token）。Anthropic 真实计费里，
+// 即使整个 prompt 命中缓存，每条请求也存在不可缓存的结构开销
+// （角色标签、模型 ID、tool_choice、最新 turn 的 wrapper 等）。
+// 把这部分保留在 input_tokens 里，cache_creation/read 不全量覆盖
+// total_input_tokens，避免展示给客户端的 prompt 永远是 0。
+//
+// 经验值：根据 Anthropic 官方 usage 抽样，结构开销稳定在
+// 数十 token 量级。此处取 150 作为单请求保留上限，按 message 数 +
+// tool 数 + system 段数 × 单位开销近似动态分配，最终钳制到 [0, 150]。
+const RESERVED_INPUT_TOKENS_CAP: i32 = 150;
+const PER_MESSAGE_OVERHEAD_TOKENS: i32 = 4;
+const PER_TOOL_OVERHEAD_TOKENS: i32 = 2;
+const PER_SYSTEM_BLOCK_OVERHEAD_TOKENS: i32 = 2;
+const REQUEST_PRELUDE_OVERHEAD_TOKENS: i32 = 8;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CacheResult {
@@ -132,19 +147,24 @@ impl CacheTracker {
             }
         }
 
-        // 把 message/system/tools 的包装层 overhead 兜进最后一个 breakpoint：
-        // block.tokens 只数 block 内部内容（count_message_content_tokens 等），
+        // 把 message/system/tools 的包装层 overhead 部分（不是全部）兜进最后一个
+        // breakpoint：block.tokens 只数 block 内部内容（count_message_content_tokens 等），
         // 而 total_input_tokens 来自 count_all_tokens，含 role tag、数组 wrapper、
         // 模型名 overhead 等结构开销。两者差值原本会落在展示 input_tokens，
-        // 表现为「prompt 字段随对话长度线性增长」。把差值并入最后断点的
-        // cumulative_tokens 后，cache_creation + cache_read 完整覆盖整个请求，
-        // 与 Claude API 真实口径（prompt = 0/1/2）对齐。
+        // 表现为「prompt 字段随对话长度线性增长」。
+        //
+        // 与 Anthropic 真实计费对齐时，应把"可缓存的"结构开销并入 cache，
+        // 但保留一部分"每请求都重算"的非缓存余量（角色标签、最新 turn wrapper、
+        // tool_choice、模型 ID 等），让客户端 input_tokens 落在合理的 0~150 区间，
+        // 而不是恒为 0。保留量按消息/工具/system 段数动态估算，并钳制到上限。
         // 仅影响展示，fingerprint 已在前文 update 时定型，不受影响。
         let total = total_input_tokens.max(0);
+        let reserve = compute_reserved_input_tokens(payload).min(total);
+        let target_cumulative = (total - reserve).max(0);
         if let Some(last_bp) = breakpoints.last()
             && let Some(block) = blocks.get_mut(last_bp.block_index)
         {
-            block.cumulative_tokens = block.cumulative_tokens.max(total);
+            block.cumulative_tokens = block.cumulative_tokens.max(target_cumulative);
         }
 
         CacheProfile {
@@ -206,13 +226,14 @@ impl CacheTracker {
                 //
                 // 命中量取「当前请求中该 breakpoint 位置的累加 token 数」，而非已存 entry 的值：
                 // - 当此 bp 即为当前请求的最后一个 bp（如同请求复发），其 cumulative 已被
-                //   build_profile 抬到 total_input_tokens —— matched = total，全量命中。
+                //   build_profile 抬到 total_input_tokens - reserve —— matched ≈ total - reserve，
+                //   留出非缓存余量计入 input_tokens（角色标签、tool_choice 等固定开销）。
                 // - 当此 bp 是当前请求的中间 bp（如对话追加新 turn），其 cumulative 为自然
                 //   累加值（仅含 content），matched 反映真实 prefix 大小。后续新增 turn
                 //   的 token 会落入 new_tokens（cache_creation），不会被冒充为 cache_read。
                 //
-                // 配合 last_breakpoint_tokens = total_input_tokens 保证守恒：
-                //   matched + new = total，prompt 字段始终为 0；同时新内容必走 creation。
+                // 配合 last_breakpoint_tokens = total_input_tokens - reserve 保证近似守恒：
+                //   matched + new + billed_input ≈ total，billed_input 落在 [0, 150]。
                 matched_tokens = breakpoint.cumulative_tokens.min(profile.total_input_tokens);
                 break 'outer;
             }
@@ -295,6 +316,30 @@ fn compute_ttl_breakdown(profile: &CacheProfile, matched_tokens: i32) -> (i32, i
     }
 }
 
+/// 估算单请求中无法缓存、每次必须重算的结构开销 token 数。
+/// 角色标签、数组 wrapper、模型 ID、tool_choice 等是 prompt cache
+/// 永远命中不到的固定结构开销，按消息/工具/system 段数线性叠加并钳制。
+fn compute_reserved_input_tokens(payload: &MessagesRequest) -> i32 {
+    let messages = payload.messages.len() as i32;
+    let tools = payload
+        .tools
+        .as_ref()
+        .map(|items| items.len() as i32)
+        .unwrap_or(0);
+    let system_blocks = payload
+        .system
+        .as_ref()
+        .map(|items| items.len() as i32)
+        .unwrap_or(0);
+
+    let raw = REQUEST_PRELUDE_OVERHEAD_TOKENS
+        + messages.saturating_mul(PER_MESSAGE_OVERHEAD_TOKENS)
+        + tools.saturating_mul(PER_TOOL_OVERHEAD_TOKENS)
+        + system_blocks.saturating_mul(PER_SYSTEM_BLOCK_OVERHEAD_TOKENS);
+
+    raw.clamp(0, RESERVED_INPUT_TOKENS_CAP)
+}
+
 impl CacheProfile {
     #[cfg(test)]
     pub fn total_input_tokens(&self) -> i32 {
@@ -345,9 +390,8 @@ fn flatten_cacheable_blocks(payload: &MessagesRequest) -> Vec<PendingBlock> {
         let last_tool_index = tools.len().saturating_sub(1);
         for (tool_index, tool) in tools.iter().enumerate() {
             let mut value = serde_json::to_value(tool).unwrap_or(serde_json::Value::Null);
-            let breakpoint_ttl = extract_cache_ttl(&value).or_else(|| {
-                (tool_index == last_tool_index).then_some(default_ttl)
-            });
+            let breakpoint_ttl = extract_cache_ttl(&value)
+                .or_else(|| (tool_index == last_tool_index).then_some(default_ttl));
             strip_cache_control(&mut value);
 
             blocks.push(PendingBlock {
@@ -368,9 +412,8 @@ fn flatten_cacheable_blocks(payload: &MessagesRequest) -> Vec<PendingBlock> {
         let last_system_index = system.len().saturating_sub(1);
         for (system_index, block) in system.iter().enumerate() {
             let mut value = serde_json::to_value(block).unwrap_or(serde_json::Value::Null);
-            let breakpoint_ttl = extract_cache_ttl(&value).or_else(|| {
-                (system_index == last_system_index).then_some(default_ttl)
-            });
+            let breakpoint_ttl = extract_cache_ttl(&value)
+                .or_else(|| (system_index == last_system_index).then_some(default_ttl));
             strip_cache_control(&mut value);
             canonicalize_system_block_for_cache(&mut value);
 
@@ -441,9 +484,8 @@ fn flatten_message_blocks(message_index: usize, message: &Message) -> Vec<Pendin
                 .iter()
                 .enumerate()
                 .map(|(block_index, block)| {
-                    let breakpoint_ttl = extract_cache_ttl(block).or_else(|| {
-                        (block_index == last_block_index).then_some(DEFAULT_CACHE_TTL)
-                    });
+                    let breakpoint_ttl = extract_cache_ttl(block)
+                        .or_else(|| (block_index == last_block_index).then_some(DEFAULT_CACHE_TTL));
                     let mut normalized = block.clone();
                     strip_cache_control(&mut normalized);
                     build_message_block(
@@ -847,10 +889,10 @@ mod tests {
     }
 
     #[test]
-    fn prefix_lookback_limits_to_recent_ten_breakpoints() {
+    fn prefix_lookback_limits_to_recent_window() {
         let tracker = CacheTracker::new(Duration::from_secs(3600));
         let mut messages = Vec::new();
-        for i in 0..12 {
+        for i in 0..18 {
             messages.push(msg(
                 "user",
                 cache_text(&format!("{}-{i}", long_cacheable_text())),
@@ -860,7 +902,7 @@ mod tests {
         let req = build_request(messages);
         let total = estimate_input_tokens(&req);
         let profile = tracker.build_profile(&req, total);
-        assert!(profile.cacheable_breakpoints().len() >= 10);
+        assert!(profile.cacheable_breakpoints().len() >= 15);
     }
 
     #[test]
@@ -885,8 +927,9 @@ mod tests {
         let profile1 = tracker.build_profile(&req1, total1);
         let result1 = tracker.compute(1, &profile1);
         assert!(result1.cache_creation_input_tokens > 0);
-        // 首请求把 wrapper overhead 兜进 cache_creation，等于 total1。
-        assert_eq!(result1.cache_creation_input_tokens, total1);
+        // 首请求把 wrapper overhead 兜进 cache_creation，扣除非缓存余量后接近 total1。
+        assert!(result1.cache_creation_input_tokens <= total1);
+        assert!(total1 - result1.cache_creation_input_tokens <= RESERVED_INPUT_TOKENS_CAP);
         tracker.update(1, &profile1);
 
         let req2 = build_request(vec![
@@ -901,10 +944,15 @@ mod tests {
         assert!(result2.cache_read_input_tokens > 0);
         // 但命中量必须仅限 req1 的「自然 prefix 内容」，不能把 req1 的 wrapper overhead
         // 也算成 read —— 否则新 turn 的 wrapper 会被错误地从 creation 里减掉，导致亏损。
-        // 守恒：read + creation = total2，且 creation 必须涵盖新增 R1+R2+对应 wrapper。
-        assert_eq!(
-            result2.cache_read_input_tokens + result2.cache_creation_input_tokens,
-            total2
+        // 近似守恒：read + creation + reserved ≈ total2，creation 必须涵盖新增 R1+R2+对应 wrapper。
+        assert!(
+            result2.cache_read_input_tokens + result2.cache_creation_input_tokens <= total2,
+            "read + creation 不应超过 total2"
+        );
+        let consumed = result2.cache_read_input_tokens + result2.cache_creation_input_tokens;
+        assert!(
+            total2 - consumed <= RESERVED_INPUT_TOKENS_CAP,
+            "保留的非缓存余量不应超过 RESERVED_INPUT_TOKENS_CAP"
         );
         // 命中量不超过 req1 自然累加（wrapper 不归 read）。
         let req1_natural_tokens = profile1
@@ -930,11 +978,10 @@ mod tests {
         let result3 = tracker.compute(1, &profile3);
         // req3 包含 req2 的 prefix，read 应大于 req2 的 read。
         assert!(result3.cache_read_input_tokens > result2.cache_read_input_tokens);
-        // 守恒同样成立。
-        assert_eq!(
-            result3.cache_read_input_tokens + result3.cache_creation_input_tokens,
-            total3
-        );
+        // 近似守恒：read + creation + reserved ≈ total3，余量不超过保留上限。
+        let consumed3 = result3.cache_read_input_tokens + result3.cache_creation_input_tokens;
+        assert!(consumed3 <= total3);
+        assert!(total3 - consumed3 <= RESERVED_INPUT_TOKENS_CAP);
     }
 
     #[test]
@@ -963,7 +1010,10 @@ mod tests {
             .iter()
             .filter(|bp| bp.ttl == Duration::from_secs(3600))
             .count();
-        assert!(one_hour_count >= 1, "expected at least 1 inherited 1h breakpoint, got {one_hour_count}");
+        assert!(
+            one_hour_count >= 1,
+            "expected at least 1 inherited 1h breakpoint, got {one_hour_count}"
+        );
     }
 
     #[test]

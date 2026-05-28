@@ -1722,13 +1722,16 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     } else {
         None
     };
-    let has_model_thinking_suffix = suffix_budget_tokens.is_some() || model_lower.ends_with("-thinking");
+    let has_model_thinking_suffix =
+        suffix_budget_tokens.is_some() || model_lower.ends_with("-thinking");
 
     let client_budget_tokens = payload.thinking.as_ref().map(|t| t.budget_tokens);
     let budget_tokens = if let Some(tokens) = suffix_budget_tokens {
         tokens
     } else if has_model_thinking_suffix || payload.thinking.is_some() {
-        client_budget_tokens.filter(|tokens| *tokens > 0).unwrap_or(24576)
+        client_budget_tokens
+            .filter(|tokens| *tokens > 0)
+            .unwrap_or(24576)
     } else {
         return;
     };
@@ -1989,11 +1992,11 @@ mod tests {
         assert_eq!(billed_input_tokens(10, 3, 20), 0);
     }
 
-    /// 端到端验证：build_profile 抬高最后断点的 cumulative_tokens 后，
-    /// cache_creation + cache_read 必然 == total_input_tokens，
-    /// 经 billed_input_tokens 后展示给客户端的 prompt = 0，贴合官方口径。
+    /// 端到端验证：build_profile 把最后断点的 cumulative_tokens 抬到
+    /// total - reserve（reserve ∈ [0, 150]）后，cache_creation + cache_read
+    /// + billed_input ≈ total，billed_input 落在 [0, 150] 区间。
     #[test]
-    fn test_displayed_prompt_equals_zero_after_overhead_bumping() {
+    fn test_displayed_prompt_in_reserved_range() {
         use crate::anthropic::cache_tracker::CacheTracker;
         use crate::anthropic::types::{
             CacheControl, Message, MessagesRequest, SystemMessage, Tool,
@@ -2044,36 +2047,46 @@ mod tests {
         let tracker = CacheTracker::new(Duration::from_secs(3600));
         let profile = tracker.build_profile(&payload, total_input_tokens);
 
-        // 首次请求：cache_creation = total，cache_read = 0
+        // 首次请求：cache_creation 接近 total - reserve，cache_read = 0
         let first = tracker.compute(1, &profile);
-        assert_eq!(
-            first.cache_creation_input_tokens + first.cache_read_input_tokens,
-            total_input_tokens,
-            "首请求时 cache_creation + cache_read 必须完整覆盖 total_input_tokens"
+        let consumed_first = first.cache_creation_input_tokens + first.cache_read_input_tokens;
+        assert!(
+            consumed_first <= total_input_tokens,
+            "首请求 cache_creation + cache_read 不应超过 total_input_tokens"
         );
         let displayed_prompt_first = billed_input_tokens(
             total_input_tokens,
             first.cache_creation_input_tokens,
             first.cache_read_input_tokens,
         );
-        assert_eq!(displayed_prompt_first, 0, "首请求展示给客户端的 prompt 必须为 0");
+        assert!(
+            (0..=150).contains(&displayed_prompt_first),
+            "首请求展示给客户端的 prompt 应落在 [0, 150]，实际 = {}",
+            displayed_prompt_first
+        );
 
         tracker.update(1, &profile);
 
-        // 二次同样请求：cache_read = total，cache_creation = 0
+        // 二次同样请求：cache_read 接近 total - reserve，cache_creation = 0
         let profile2 = tracker.build_profile(&payload, total_input_tokens);
         let second = tracker.compute(1, &profile2);
-        assert_eq!(
-            second.cache_creation_input_tokens + second.cache_read_input_tokens,
-            total_input_tokens,
-            "命中后 cache_creation + cache_read 必须完整覆盖 total_input_tokens"
+        let consumed_second = second.cache_creation_input_tokens + second.cache_read_input_tokens;
+        assert!(
+            consumed_second <= total_input_tokens,
+            "命中后 cache_creation + cache_read 不应超过 total_input_tokens"
         );
         let displayed_prompt_second = billed_input_tokens(
             total_input_tokens,
             second.cache_creation_input_tokens,
             second.cache_read_input_tokens,
         );
-        assert_eq!(displayed_prompt_second, 0, "命中时展示给客户端的 prompt 必须为 0");
+        assert!(
+            (0..=150).contains(&displayed_prompt_second),
+            "命中时展示给客户端的 prompt 应落在 [0, 150]，实际 = {}",
+            displayed_prompt_second
+        );
+        // 两次的展示余量应当一致（同一 payload 结构）
+        assert_eq!(displayed_prompt_first, displayed_prompt_second);
     }
 
     /// 业务合规性验证：用户追加新内容时，新增 token 必须计入 cache_creation（写入），
@@ -2164,17 +2177,18 @@ mod tests {
         let profile2 = tracker.build_profile(&req2, total2);
         let result2 = tracker.compute(1, &profile2);
 
-        // 守恒：read + creation == total，客户端展示 prompt = 0
-        assert_eq!(
-            result2.cache_read_input_tokens + result2.cache_creation_input_tokens,
-            total2
-        );
+        // 近似守恒：read + creation + billed_input ≈ total，billed_input ∈ [0, 150]
+        assert!(result2.cache_read_input_tokens + result2.cache_creation_input_tokens <= total2);
         let displayed_prompt = billed_input_tokens(
             total2,
             result2.cache_creation_input_tokens,
             result2.cache_read_input_tokens,
         );
-        assert_eq!(displayed_prompt, 0);
+        assert!(
+            (0..=150).contains(&displayed_prompt),
+            "billed_input 应落在 [0, 150]，实际 = {}",
+            displayed_prompt
+        );
 
         // 关键合规性断言：新增的 assistant + user 内容必须有相应 creation。
         // 估算新增内容下界（保守估计：仅取文本 token 估算的一部分）。
@@ -2426,7 +2440,10 @@ mod tests {
             Some(24576)
         );
         assert_eq!(
-            default_payload.output_config.as_ref().map(|c| c.effort.as_str()),
+            default_payload
+                .output_config
+                .as_ref()
+                .map(|c| c.effort.as_str()),
             Some("high")
         );
     }
