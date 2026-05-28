@@ -1989,6 +1989,218 @@ mod tests {
         assert_eq!(billed_input_tokens(10, 3, 20), 0);
     }
 
+    /// 端到端验证：build_profile 抬高最后断点的 cumulative_tokens 后，
+    /// cache_creation + cache_read 必然 == total_input_tokens，
+    /// 经 billed_input_tokens 后展示给客户端的 prompt = 0，贴合官方口径。
+    #[test]
+    fn test_displayed_prompt_equals_zero_after_overhead_bumping() {
+        use crate::anthropic::cache_tracker::CacheTracker;
+        use crate::anthropic::types::{
+            CacheControl, Message, MessagesRequest, SystemMessage, Tool,
+        };
+        use std::time::Duration;
+
+        let payload = MessagesRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: serde_json::json!([{
+                    "type": "text",
+                    "text": "hello world ".repeat(100),
+                    "cache_control": { "type": "ephemeral" }
+                }]),
+            }],
+            stream: false,
+            system: Some(vec![SystemMessage {
+                block_type: Some("text".to_string()),
+                text: "You are helpful. ".repeat(50),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                    ttl: None,
+                }),
+            }]),
+            tools: Some(vec![Tool {
+                tool_type: None,
+                name: "echo".to_string(),
+                description: "echo".to_string(),
+                input_schema: Default::default(),
+                max_uses: None,
+                cache_control: None,
+            }]),
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+
+        let total_input_tokens = crate::token::count_all_tokens(
+            payload.model.clone(),
+            payload.system.clone(),
+            payload.messages.clone(),
+            payload.tools.clone(),
+        ) as i32;
+
+        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let profile = tracker.build_profile(&payload, total_input_tokens);
+
+        // 首次请求：cache_creation = total，cache_read = 0
+        let first = tracker.compute(1, &profile);
+        assert_eq!(
+            first.cache_creation_input_tokens + first.cache_read_input_tokens,
+            total_input_tokens,
+            "首请求时 cache_creation + cache_read 必须完整覆盖 total_input_tokens"
+        );
+        let displayed_prompt_first = billed_input_tokens(
+            total_input_tokens,
+            first.cache_creation_input_tokens,
+            first.cache_read_input_tokens,
+        );
+        assert_eq!(displayed_prompt_first, 0, "首请求展示给客户端的 prompt 必须为 0");
+
+        tracker.update(1, &profile);
+
+        // 二次同样请求：cache_read = total，cache_creation = 0
+        let profile2 = tracker.build_profile(&payload, total_input_tokens);
+        let second = tracker.compute(1, &profile2);
+        assert_eq!(
+            second.cache_creation_input_tokens + second.cache_read_input_tokens,
+            total_input_tokens,
+            "命中后 cache_creation + cache_read 必须完整覆盖 total_input_tokens"
+        );
+        let displayed_prompt_second = billed_input_tokens(
+            total_input_tokens,
+            second.cache_creation_input_tokens,
+            second.cache_read_input_tokens,
+        );
+        assert_eq!(displayed_prompt_second, 0, "命中时展示给客户端的 prompt 必须为 0");
+    }
+
+    /// 业务合规性验证：用户追加新内容时，新增 token 必须计入 cache_creation（写入），
+    /// 不能被冒充为 cache_read（读取），否则等于免费给客户提供资源 → 业务方亏损。
+    #[test]
+    fn test_appended_turn_charges_creation_not_read() {
+        use crate::anthropic::cache_tracker::CacheTracker;
+        use crate::anthropic::types::{
+            CacheControl, Message, MessagesRequest, SystemMessage, Tool,
+        };
+        use std::time::Duration;
+
+        let make_payload = |messages: Vec<Message>| MessagesRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            max_tokens: 1024,
+            messages,
+            stream: false,
+            system: Some(vec![SystemMessage {
+                block_type: Some("text".to_string()),
+                text: "system prompt ".repeat(50),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                    ttl: None,
+                }),
+            }]),
+            tools: Some(vec![Tool {
+                tool_type: None,
+                name: "echo".to_string(),
+                description: "echo".to_string(),
+                input_schema: Default::default(),
+                max_uses: None,
+                cache_control: None,
+            }]),
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+
+        let tracker = CacheTracker::new(Duration::from_secs(3600));
+
+        // Round 1: 单条 user message
+        let req1 = make_payload(vec![Message {
+            role: "user".to_string(),
+            content: serde_json::json!([{
+                "type": "text",
+                "text": "first turn ".repeat(100),
+                "cache_control": { "type": "ephemeral" }
+            }]),
+        }]);
+        let total1 = crate::token::count_all_tokens(
+            req1.model.clone(),
+            req1.system.clone(),
+            req1.messages.clone(),
+            req1.tools.clone(),
+        ) as i32;
+        let profile1 = tracker.build_profile(&req1, total1);
+        let _ = tracker.compute(1, &profile1);
+        tracker.update(1, &profile1);
+
+        // Round 2: 在 round 1 基础上追加 assistant + 新 user turn
+        let new_assistant_text = "assistant reply ".repeat(80);
+        let new_user_text = "second turn ".repeat(120);
+        let req2 = make_payload(vec![
+            Message {
+                role: "user".to_string(),
+                content: serde_json::json!([{
+                    "type": "text",
+                    "text": "first turn ".repeat(100),
+                    "cache_control": { "type": "ephemeral" }
+                }]),
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: serde_json::json!(new_assistant_text.clone()),
+            },
+            Message {
+                role: "user".to_string(),
+                content: serde_json::json!(new_user_text.clone()),
+            },
+        ]);
+        let total2 = crate::token::count_all_tokens(
+            req2.model.clone(),
+            req2.system.clone(),
+            req2.messages.clone(),
+            req2.tools.clone(),
+        ) as i32;
+        let profile2 = tracker.build_profile(&req2, total2);
+        let result2 = tracker.compute(1, &profile2);
+
+        // 守恒：read + creation == total，客户端展示 prompt = 0
+        assert_eq!(
+            result2.cache_read_input_tokens + result2.cache_creation_input_tokens,
+            total2
+        );
+        let displayed_prompt = billed_input_tokens(
+            total2,
+            result2.cache_creation_input_tokens,
+            result2.cache_read_input_tokens,
+        );
+        assert_eq!(displayed_prompt, 0);
+
+        // 关键合规性断言：新增的 assistant + user 内容必须有相应 creation。
+        // 估算新增内容下界（保守估计：仅取文本 token 估算的一部分）。
+        let new_assistant_chars = new_assistant_text.chars().count() as i32;
+        let new_user_chars = new_user_text.chars().count() as i32;
+        // 极保守估计：每 4 字符算 1 token（实际更多）。
+        let conservative_min_new_tokens = (new_assistant_chars + new_user_chars) / 4;
+
+        assert!(
+            result2.cache_creation_input_tokens >= conservative_min_new_tokens,
+            "新增内容必须计入 creation，期望 >= {}, 实际 = {}（read = {}, total = {}）",
+            conservative_min_new_tokens,
+            result2.cache_creation_input_tokens,
+            result2.cache_read_input_tokens,
+            total2
+        );
+
+        // cache_read 不能超过 round 1 的 total（即不能把 round 2 新内容冒充为 read）
+        assert!(
+            result2.cache_read_input_tokens <= total1,
+            "cache_read 超过了 round 1 总量，新内容被错误地算成了 read（read = {}, total1 = {}）",
+            result2.cache_read_input_tokens,
+            total1
+        );
+    }
+
     #[test]
     fn test_non_stream_usage_uses_estimated_input_tokens_as_base() {
         let estimated_input_tokens = 1493;

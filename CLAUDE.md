@@ -68,6 +68,11 @@ POST /v1/messages (Anthropic 格式)
 5. **Streaming Response** - `anthropic/stream.rs`: 使用 `StreamContext` 实时将 Kiro 事件转换为 Anthropic SSE，最终 usage 采用本地估算口径并透传上游 `meteringEvent` 诊断信息
 6. **Input Compressor** - `anthropic/compressor.rs`: 多层压缩管道（空白压缩 → thinking 截断 → tool_result 截断 → tool_use input 截断 → 历史截断），自动修复 tool_use/tool_result 配对以避免上游 400 错误
 7. **Image Processor** - `image.rs`: 图片处理（缩放、GIF 抽帧、token 计算）。GIF 抽帧策略：最多 20 帧、最多 5fps、按时长自适应采样间隔，输出为 JPEG 静态帧序列
+8. **Affinity & Load Balance** - `kiro/affinity.rs`: 凭据亲和性 + 负载均衡。retry 链路使用 `exclude_ids` 强制跳过上次失败凭据（避免撞回同一个失败凭据）；新凭据 `recent_usage` 用现有凭据中位数作 baseline，防止「雷暴」（瞬间被全量打到）
+9. **Background Refresh** - `kiro/background_refresh.rs`: 周期性刷新余额缓存（10 分钟周期），余额不足主动禁用凭据
+10. **Cache Tracker** - `anthropic/cache_tracker.rs`: 跟踪 Anthropic prompt cache 命中率。`expires_at` 从首次写入算（而非命中时刷新），与上游真实 TTL 对齐
+11. **Rate Limiter** - `kiro/rate_limiter.rs`: 凭据级本地限流。`credentialRpm: 0` 真禁用所有本地限流检查（不再回落到默认值）
+12. **Web Portal & Overage** - `kiro/web_portal.rs` + `kiro/overage.rs`: 通过 Web Portal 与 `GetUserUsageAndLimits` 同步 overage 状态；余额展示/缓存/自动禁用使用「基础额度 + 超额额度」的有效额度
 
 ## 共享状态
 
@@ -88,6 +93,8 @@ AppState {
 - 请求失败时 `report_failure()` 触发故障转移到下一个可用凭据
 - 冷却分类管理：`FailureLimit` / `InsufficientBalance` / `ModelUnavailable` / `QuotaExceeded`
 - `MODEL_TEMPORARILY_UNAVAILABLE` 触发全局熔断，禁用所有凭据
+- Retry 链路通过 `exclude_ids` 跳过上次失败凭据（参见 `affinity.rs`）
+- KIRO_API_KEY 环境变量启动时会作为最高优先级 runtime-only 凭据插入
 
 ## API 端点
 
@@ -113,3 +120,7 @@ AppState {
 10. **图片处理**: GIF 会被抽帧并重编码为 JPEG 静态帧序列（最多 20 帧、最多 5fps），以降低请求体大小并提升内容识别效果。图片缩放规则：长边超过 4000px 或总像素超过 400 万时等比缩放
 11. **输入压缩**: 当请求体接近上游限制（约 5MB）时，自动执行多层压缩（空白压缩 → thinking 截断 → tool_result 截断 → tool_use input 截断 → 历史截断），并自动修复 tool_use/tool_result 配对以避免上游 400 错误
 12. **上游 400 排障**: 若遇到 `Improperly formed request` 错误，参考 `docs/troubleshooting/400-improperly-formed-request.md` 和 `tools/test_400_improperly_formed.py` 进行诊断
+13. **TLS 后端**: 默认 `rustls`，遇到 token 刷新失败/`error request` 等问题可通过 `config.json` 的 `tlsBackend` 切回 `native-tls`
+14. **代理优先级**: 凭据级代理 > 全局代理 > 无代理；凭据可显式设 `direct` 强制直连覆盖全局代理
+15. **Thinking 模型路由**: `claude-opus-4-7-thinking` 与 `claude-opus-4-6-thinking` 走 adaptive thinking；客户端选普通模型但请求带 `thinking` 参数也会启用思考（无效预算默认 high）
+16. **代码风格**: 项目内日志、注释、文档均使用中文（与 fork 上游保持一致）。新增代码请保持中文注释/日志风格
