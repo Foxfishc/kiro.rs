@@ -184,6 +184,7 @@ const KIRO_MODEL_SONNET_4_6: &str = "claude-sonnet-4.6";
 const KIRO_MODEL_OPUS_4_5: &str = "claude-opus-4.5";
 const KIRO_MODEL_OPUS_4_6: &str = "claude-opus-4.6";
 const KIRO_MODEL_OPUS_4_7: &str = "claude-opus-4.7";
+const KIRO_MODEL_OPUS_4_8: &str = "claude-opus-4.8";
 const KIRO_MODEL_HAIKU_4_5: &str = "claude-haiku-4.5";
 
 fn normalize_model_name(model: &str) -> String {
@@ -197,7 +198,7 @@ fn normalize_model_name(model: &str) -> String {
 ///
 /// 映射规则：
 /// - sonnet 且包含 4.6/4-6 → claude-sonnet-4.6，否则 → claude-sonnet-4.5
-/// - opus 且包含 4.5/4-5 → claude-opus-4.5，包含 4.7/4-7 → claude-opus-4.7，否则 → claude-opus-4.6
+/// - opus 且包含 4.5/4-5 → claude-opus-4.5，包含 4.8/4-8 → claude-opus-4.8，包含 4.7/4-7 → claude-opus-4.7，否则 → claude-opus-4.6
 /// - 所有 haiku → claude-haiku-4.5
 /// - `-thinking` / `-agentic` 后缀会被剥离后再映射
 pub fn map_model(model: &str) -> Option<String> {
@@ -212,6 +213,8 @@ pub fn map_model(model: &str) -> Option<String> {
     } else if normalized_model.contains("opus") {
         if normalized_model.contains("4-5") || normalized_model.contains("4.5") {
             Some(KIRO_MODEL_OPUS_4_5.to_string())
+        } else if normalized_model.contains("4-8") || normalized_model.contains("4.8") {
+            Some(KIRO_MODEL_OPUS_4_8.to_string())
         } else if normalized_model.contains("4-7") || normalized_model.contains("4.7") {
             Some(KIRO_MODEL_OPUS_4_7.to_string())
         } else {
@@ -1617,6 +1620,8 @@ mod tests {
         assert_eq!(map_model("claude-opus-4-6").unwrap(), KIRO_MODEL_OPUS_4_6);
         assert_eq!(map_model("claude-opus-4-7").unwrap(), KIRO_MODEL_OPUS_4_7);
         assert_eq!(map_model("claude-opus-4.7").unwrap(), KIRO_MODEL_OPUS_4_7);
+        assert_eq!(map_model("claude-opus-4-8").unwrap(), KIRO_MODEL_OPUS_4_8);
+        assert_eq!(map_model("claude-opus-4.8").unwrap(), KIRO_MODEL_OPUS_4_8);
     }
 
     #[test]

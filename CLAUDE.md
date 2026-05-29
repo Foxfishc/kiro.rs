@@ -70,7 +70,7 @@ POST /v1/messages (Anthropic 格式)
 7. **Image Processor** - `image.rs`: 图片处理（缩放、GIF 抽帧、token 计算）。GIF 抽帧策略：最多 20 帧、最多 5fps、按时长自适应采样间隔，输出为 JPEG 静态帧序列
 8. **Affinity & Load Balance** - `kiro/affinity.rs`: 凭据亲和性 + 负载均衡。retry 链路使用 `exclude_ids` 强制跳过上次失败凭据（避免撞回同一个失败凭据）；新凭据 `recent_usage` 用现有凭据中位数作 baseline，防止「雷暴」（瞬间被全量打到）
 9. **Background Refresh** - `kiro/background_refresh.rs`: 周期性刷新余额缓存（10 分钟周期），余额不足主动禁用凭据
-10. **Cache Tracker** - `anthropic/cache_tracker.rs`: 跟踪 Anthropic prompt cache 命中率。`expires_at` 从首次写入算（而非命中时刷新），与上游真实 TTL 对齐
+10. **Cache Tracker** - `anthropic/cache_tracker.rs`: 跟踪 Anthropic prompt cache 命中率。`expires_at` 从首次写入算（命中和后续 update 都不刷新），TTL 与 Anthropic 真实行为对齐。仅 `model` 进入 prefix prelude；隐式断点须在出现显式 `cache_control` 之后启用；命中应用 0.95 上限与 Opus 4096 / 其他 1024 最小可缓存阈值。
 11. **Rate Limiter** - `kiro/rate_limiter.rs`: 凭据级本地限流。`credentialRpm: 0` 真禁用所有本地限流检查（不再回落到默认值）
 12. **Web Portal & Overage** - `kiro/web_portal.rs` + `kiro/overage.rs`: 通过 Web Portal 与 `GetUserUsageAndLimits` 同步 overage 状态；余额展示/缓存/自动禁用使用「基础额度 + 超额额度」的有效额度
 
@@ -122,5 +122,5 @@ AppState {
 12. **上游 400 排障**: 若遇到 `Improperly formed request` 错误，参考 `docs/troubleshooting/400-improperly-formed-request.md` 和 `tools/test_400_improperly_formed.py` 进行诊断
 13. **TLS 后端**: 默认 `rustls`，遇到 token 刷新失败/`error request` 等问题可通过 `config.json` 的 `tlsBackend` 切回 `native-tls`
 14. **代理优先级**: 凭据级代理 > 全局代理 > 无代理；凭据可显式设 `direct` 强制直连覆盖全局代理
-15. **Thinking 模型路由**: `claude-opus-4-7-thinking` 与 `claude-opus-4-6-thinking` 走 adaptive thinking；客户端选普通模型但请求带 `thinking` 参数也会启用思考（无效预算默认 high）
+15. **Thinking 模型路由**: `claude-opus-4-8-thinking` / `claude-opus-4-7-thinking` / `claude-opus-4-6-thinking` 走 adaptive thinking；客户端选普通模型但请求带 `thinking` 参数也会启用思考（无效预算默认 high）
 16. **代码风格**: 项目内日志、注释、文档均使用中文（与 fork 上游保持一致）。新增代码请保持中文注释/日志风格

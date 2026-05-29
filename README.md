@@ -19,7 +19,7 @@
 - **Overages 在线启停与状态同步**：Admin UI 支持 SSE 实时开启/关闭 Overages；后端会从 Web Portal 与 `GetUserUsageAndLimits` 同步 overage 状态，并持久化到凭据。
 - **Overage-aware 余额与自动禁用**：余额展示、缓存与自动禁用逻辑使用“基础额度 + 超额额度”的有效额度；上游未返回 `overageEnabled` 时不会误判为关闭。
 - **Admin 详情页白屏修复与全局模型列表**：修复凭据详情渲染问题；固定 `/v1/models` 能力列表不再在每个凭据详情重复显示，改为 Admin 顶部全局“可用模型”。
-- **Thinking 兼容增强**：`claude-opus-4-7-thinking` 与 `claude-opus-4-6-thinking` 一样走 adaptive thinking；客户端即使选择不带 `-thinking` 的模型，只要请求带 `thinking` 参数也会启用思考。
+- **Thinking 兼容增强**：`claude-opus-4-8-thinking` / `claude-opus-4-7-thinking` / `claude-opus-4-6-thinking` 一样走 adaptive thinking；客户端即使选择不带 `-thinking` 的模型，只要请求带 `thinking` 参数也会启用思考。
 - **Release 与 Docker Hub 自动构建**：保留多平台二进制 release workflow，并在 push tag `v*` 时自动构建 Docker Hub 镜像。
 
 镜像：`foxfishs/kiro-rs:latest`（不含本次修复的请用上游镜像 `ghcr.io/hank9999/kiro-rs:latest`）。
@@ -693,3 +693,6 @@ MIT
 ## 友情链接
 
 本项目在 [LINUX DO](https://linux.do) 公益推广，[LINUX DO](https://linux.do) 是一个真诚、友善、团结、专业的新型综合性社区，欢迎来玩。
+
+docker build -t tianjiangqiji/kiro-rs:latest .
+docker push tianjiangqiji/kiro-rs:latest

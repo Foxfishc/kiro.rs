@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Tailwind v4 默认 dark: 跟随系统主题，这里改为跟随页面内的 html.dark 开关 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* 自定义主题配置 */
 @theme {
   --color-border: hsl(var(--border));

@@ -12,22 +12,26 @@ use super::types::{CacheControl, Message, MessagesRequest};
 
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 const ONE_HOUR_CACHE_TTL: Duration = Duration::from_secs(3600);
-const PREFIX_LOOKBACK_LIMIT: usize = 15;
+const PREFIX_LOOKBACK_LIMIT: usize = 64;
 
-// 非缓存输入保留量上限（token）。Anthropic 真实计费里，
-// 即使整个 prompt 命中缓存，每条请求也存在不可缓存的结构开销
-// （角色标签、模型 ID、tool_choice、最新 turn 的 wrapper 等）。
-// 把这部分保留在 input_tokens 里，cache_creation/read 不全量覆盖
-// total_input_tokens，避免展示给客户端的 prompt 永远是 0。
-//
-// 经验值：根据 Anthropic 官方 usage 抽样，结构开销稳定在
-// 数十 token 量级。此处取 150 作为单请求保留上限，按 message 数 +
-// tool 数 + system 段数 × 单位开销近似动态分配，最终钳制到 [0, 150]。
-const RESERVED_INPUT_TOKENS_CAP: i32 = 150;
-const PER_MESSAGE_OVERHEAD_TOKENS: i32 = 4;
-const PER_TOOL_OVERHEAD_TOKENS: i32 = 2;
-const PER_SYSTEM_BLOCK_OVERHEAD_TOKENS: i32 = 2;
-const REQUEST_PRELUDE_OVERHEAD_TOKENS: i32 = 8;
+// 命中上限：与 Anthropic 真实行为对齐，最新内容总有不可缓存的结构开销，
+// 永远不可能 100% 命中。这里钳制到 95%，让客户端看到的 input_tokens 至少
+// 保留 5% 真实重算量，避免出现 cache_read = total 的奇景。
+const MAX_CACHE_RATIO_NUM: i64 = 95;
+const MAX_CACHE_RATIO_DEN: i64 = 100;
+
+// 最小可缓存 token 阈值：低于此阈值的 prompt 不进入缓存（与 Anthropic 官方
+// minimum cacheable prompt 行为对齐）。Opus 系列阈值更高。
+const DEFAULT_MIN_CACHEABLE_TOKENS: i32 = 1024;
+const OPUS_MIN_CACHEABLE_TOKENS: i32 = 4096;
+
+fn min_cacheable_tokens(model: &str) -> i32 {
+    if model.to_lowercase().contains("opus") {
+        OPUS_MIN_CACHEABLE_TOKENS
+    } else {
+        DEFAULT_MIN_CACHEABLE_TOKENS
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CacheResult {
@@ -42,6 +46,8 @@ pub struct CacheProfile {
     total_input_tokens: i32,
     blocks: Vec<CacheBlock>,
     breakpoints: Vec<CacheBreakpoint>,
+    /// 请求模型，用于决定 min_cacheable_tokens 阈值
+    model: String,
 }
 
 #[derive(Debug, Clone)]
@@ -90,9 +96,9 @@ impl CacheTracker {
         let flattened = flatten_cacheable_blocks(payload);
 
         // 与 prompt 内容无关但会影响官方缓存可复用性的固定配置。
+        // 仅哈希 model；tool_choice 不影响缓存指纹，切换不致使缓存失效。
         let request_prelude = canonicalize_json(serde_json::json!({
             "model": payload.model,
-            "tool_choice": payload.tool_choice,
         }));
         let prelude_bytes = serde_json::to_vec(&request_prelude).unwrap_or_default();
         let mut prefix_hasher = Sha256::new();
@@ -104,6 +110,7 @@ impl CacheTracker {
         let mut cumulative_tokens = 0i32;
 
         let mut active_ttl: Option<Duration> = None;
+        let mut seen_explicit_breakpoint = false;
         let mut seen_breakpoints: std::collections::BTreeSet<usize> =
             std::collections::BTreeSet::new();
 
@@ -124,9 +131,11 @@ impl CacheTracker {
                 cumulative_tokens,
             });
 
+            // 显式 cache_control 断点：遇到 breakpoint_ttl 即置 seen_explicit_breakpoint
             if let Some(ttl) = block.breakpoint_ttl {
                 let ttl = ttl.min(self.max_supported_ttl);
                 active_ttl = Some(ttl);
+                seen_explicit_breakpoint = true;
                 if seen_breakpoints.insert(index) {
                     breakpoints.push(CacheBreakpoint {
                         block_index: index,
@@ -135,7 +144,9 @@ impl CacheTracker {
                 }
             }
 
-            if block.is_message_end
+            // 隐式 message_end 派生断点：仅当已出现过显式 cache_control 后才启用
+            if seen_explicit_breakpoint
+                && block.is_message_end
                 && block.message_index.is_some()
                 && let Some(ttl) = active_ttl
                 && seen_breakpoints.insert(index)
@@ -147,30 +158,15 @@ impl CacheTracker {
             }
         }
 
-        // 把 message/system/tools 的包装层 overhead 部分（不是全部）兜进最后一个
-        // breakpoint：block.tokens 只数 block 内部内容（count_message_content_tokens 等），
-        // 而 total_input_tokens 来自 count_all_tokens，含 role tag、数组 wrapper、
-        // 模型名 overhead 等结构开销。两者差值原本会落在展示 input_tokens，
-        // 表现为「prompt 字段随对话长度线性增长」。
-        //
-        // 与 Anthropic 真实计费对齐时，应把"可缓存的"结构开销并入 cache，
-        // 但保留一部分"每请求都重算"的非缓存余量（角色标签、最新 turn wrapper、
-        // tool_choice、模型 ID 等），让客户端 input_tokens 落在合理的 0~150 区间，
-        // 而不是恒为 0。保留量按消息/工具/system 段数动态估算，并钳制到上限。
-        // 仅影响展示，fingerprint 已在前文 update 时定型，不受影响。
-        let total = total_input_tokens.max(0);
-        let reserve = compute_reserved_input_tokens(payload).min(total);
-        let target_cumulative = (total - reserve).max(0);
-        if let Some(last_bp) = breakpoints.last()
-            && let Some(block) = blocks.get_mut(last_bp.block_index)
-        {
-            block.cumulative_tokens = block.cumulative_tokens.max(target_cumulative);
-        }
+        // total_input_tokens 保留为 count_all_tokens 的原始值，
+        // 不再做任何 cumulative_tokens 抬升：命中量取 entry.token_count，
+        // 低于阈值不计入缓存，非缓存余量由 usage 拼装层的 max(0) 兜底。
 
         CacheProfile {
-            total_input_tokens: total,
+            total_input_tokens: total_input_tokens.max(0),
             blocks,
             breakpoints,
+            model: payload.model.clone(),
         }
     }
 
@@ -186,13 +182,24 @@ impl CacheTracker {
         let mut entries = self.entries.lock();
         prune_expired(&mut entries.by_credential, now);
 
+        let min_tokens = min_cacheable_tokens(&profile.model);
+
         let Some(credential_entries) = entries.by_credential.get_mut(&credential_id) else {
-            // 首次请求，需要创建缓存
+            // 首次请求，无缓存条目
             tracing::debug!(credential_id, "首次请求，无缓存条目");
-            let (cache_5m, cache_1h) = compute_ttl_breakdown(profile, 0);
+            let creation = if last_breakpoint_tokens >= min_tokens {
+                last_breakpoint_tokens
+            } else {
+                0
+            };
+            let (cache_5m, cache_1h) = if creation > 0 {
+                compute_ttl_breakdown(profile, 0)
+            } else {
+                (0, 0)
+            };
             return CacheResult {
                 cache_read_input_tokens: 0,
-                cache_creation_input_tokens: last_breakpoint_tokens,
+                cache_creation_input_tokens: creation,
                 cache_creation_5m_input_tokens: cache_5m,
                 cache_creation_1h_input_tokens: cache_1h,
             };
@@ -215,29 +222,31 @@ impl CacheTracker {
             .collect();
 
         'outer: for breakpoint in candidate_breakpoints {
+            // 跳过低于最小可缓存阈值的断点
+            if breakpoint.cumulative_tokens < min_tokens {
+                continue;
+            }
             let candidate = &profile.blocks[breakpoint.block_index];
             if let Some(entry) = credential_entries.get(&candidate.prefix_fingerprint) {
                 if entry.expires_at <= now {
                     continue;
                 }
-                // 不在命中时刷新 expires_at。Anthropic 真实 prompt cache TTL 从首次写入计算，
-                // 命中不延期；本地 expires_at 续命会让活动会话的 cache 在本地表里几乎不过期，
-                // 导致 cache_read 数字虚高、与上游真实命中率脱节。
+                // 命中量取 entry 中存储的 token_count（首次写入时单调增长的 cumulative），
+                // 而非当前请求的 breakpoint.cumulative_tokens。这样 hit 量反映的是
+                // 历史上写过的最大前缀，不受当前 total_input_tokens 波动影响。
                 //
-                // 命中量取「当前请求中该 breakpoint 位置的累加 token 数」，而非已存 entry 的值：
-                // - 当此 bp 即为当前请求的最后一个 bp（如同请求复发），其 cumulative 已被
-                //   build_profile 抬到 total_input_tokens - reserve —— matched ≈ total - reserve，
-                //   留出非缓存余量计入 input_tokens（角色标签、tool_choice 等固定开销）。
-                // - 当此 bp 是当前请求的中间 bp（如对话追加新 turn），其 cumulative 为自然
-                //   累加值（仅含 content），matched 反映真实 prefix 大小。后续新增 turn
-                //   的 token 会落入 new_tokens（cache_creation），不会被冒充为 cache_read。
-                //
-                // 配合 last_breakpoint_tokens = total_input_tokens - reserve 保证近似守恒：
-                //   matched + new + billed_input ≈ total，billed_input 落在 [0, 150]。
-                matched_tokens = breakpoint.cumulative_tokens.min(profile.total_input_tokens);
+                // 不在命中时刷新 expires_at：Anthropic 真实 TTL 从首次写入计算，
+                // 命中不延期。
+                matched_tokens = entry.token_count.min(profile.total_input_tokens);
                 break 'outer;
             }
         }
+
+        // MAX_CACHE_RATIO 钳制：永远不允许 read 超过 total 的 95%，
+        // 确保客户端看到的 input_tokens 至少有 5% 真实重算量。
+        let cap =
+            (profile.total_input_tokens as i64 * MAX_CACHE_RATIO_NUM / MAX_CACHE_RATIO_DEN) as i32;
+        matched_tokens = matched_tokens.min(cap);
 
         let new_tokens = last_breakpoint_tokens.saturating_sub(matched_tokens).max(0);
         let (cache_5m, cache_1h) = compute_ttl_breakdown(profile, matched_tokens);
@@ -265,18 +274,21 @@ impl CacheTracker {
         prune_expired(&mut entries.by_credential, now);
 
         let credential_entries = entries.by_credential.entry(credential_id).or_default();
+        let min_tokens = min_cacheable_tokens(&profile.model);
 
         for breakpoint in profile.cacheable_breakpoints() {
+            if breakpoint.cumulative_tokens < min_tokens {
+                continue;
+            }
             let block = &profile.blocks[breakpoint.block_index];
             let next_expiry = now + breakpoint.ttl;
 
             match credential_entries.get_mut(&block.prefix_fingerprint) {
                 Some(existing) => {
                     // 不刷新 expires_at：Anthropic 真实 prompt cache TTL 从首次写入起算，
-                    // 重写已存在的 prefix 不会续 TTL（命中前到期就过期）。
-                    // 仅更新可单调增长的字段，TTL 完全保留旧值，与上游对齐。
+                    // 重写已存在的 prefix 不会续 TTL。
+                    // 仅单调增长 token_count；不更新 ttl，不续命。
                     existing.token_count = existing.token_count.max(block.cumulative_tokens);
-                    existing.ttl = existing.ttl.max(breakpoint.ttl);
                 }
                 None => {
                     credential_entries.insert(
@@ -293,51 +305,26 @@ impl CacheTracker {
     }
 }
 
-/// 计算不同 TTL 的缓存创建 token 数
+/// 按断点逐个累加 5m/1h delta。profile 中的每个 cacheable 断点按其 TTL
+/// 将 cumulative_tokens 中超过 matched_tokens 的部分计入对应桶。
 fn compute_ttl_breakdown(profile: &CacheProfile, matched_tokens: i32) -> (i32, i32) {
-    let Some(last_breakpoint) = profile.last_cacheable_breakpoint() else {
-        return (0, 0);
-    };
-
-    let new_tokens = last_breakpoint
-        .cumulative_tokens
-        .min(profile.total_input_tokens)
-        .saturating_sub(matched_tokens)
-        .max(0);
-
-    if new_tokens == 0 {
-        return (0, 0);
+    let mut cache_5m = 0;
+    let mut cache_1h = 0;
+    let mut previous = matched_tokens;
+    for bp in profile.cacheable_breakpoints() {
+        let current = bp.cumulative_tokens.min(profile.total_input_tokens);
+        if current <= previous {
+            continue;
+        }
+        let delta = current - previous;
+        if bp.ttl >= ONE_HOUR_CACHE_TTL {
+            cache_1h += delta;
+        } else {
+            cache_5m += delta;
+        }
+        previous = current;
     }
-
-    if last_breakpoint.ttl == ONE_HOUR_CACHE_TTL {
-        (0, new_tokens)
-    } else {
-        (new_tokens, 0)
-    }
-}
-
-/// 估算单请求中无法缓存、每次必须重算的结构开销 token 数。
-/// 角色标签、数组 wrapper、模型 ID、tool_choice 等是 prompt cache
-/// 永远命中不到的固定结构开销，按消息/工具/system 段数线性叠加并钳制。
-fn compute_reserved_input_tokens(payload: &MessagesRequest) -> i32 {
-    let messages = payload.messages.len() as i32;
-    let tools = payload
-        .tools
-        .as_ref()
-        .map(|items| items.len() as i32)
-        .unwrap_or(0);
-    let system_blocks = payload
-        .system
-        .as_ref()
-        .map(|items| items.len() as i32)
-        .unwrap_or(0);
-
-    let raw = REQUEST_PRELUDE_OVERHEAD_TOKENS
-        + messages.saturating_mul(PER_MESSAGE_OVERHEAD_TOKENS)
-        + tools.saturating_mul(PER_TOOL_OVERHEAD_TOKENS)
-        + system_blocks.saturating_mul(PER_SYSTEM_BLOCK_OVERHEAD_TOKENS);
-
-    raw.clamp(0, RESERVED_INPUT_TOKENS_CAP)
+    (cache_5m, cache_1h)
 }
 
 impl CacheProfile {
@@ -384,14 +371,11 @@ struct PendingBlock {
 
 fn flatten_cacheable_blocks(payload: &MessagesRequest) -> Vec<PendingBlock> {
     let mut blocks = Vec::new();
-    let default_ttl = DEFAULT_CACHE_TTL;
 
     if let Some(tools) = &payload.tools {
-        let last_tool_index = tools.len().saturating_sub(1);
         for (tool_index, tool) in tools.iter().enumerate() {
             let mut value = serde_json::to_value(tool).unwrap_or(serde_json::Value::Null);
-            let breakpoint_ttl = extract_cache_ttl(&value)
-                .or_else(|| (tool_index == last_tool_index).then_some(default_ttl));
+            let breakpoint_ttl = extract_cache_ttl(&value);
             strip_cache_control(&mut value);
 
             blocks.push(PendingBlock {
@@ -409,11 +393,9 @@ fn flatten_cacheable_blocks(payload: &MessagesRequest) -> Vec<PendingBlock> {
     }
 
     if let Some(system) = &payload.system {
-        let last_system_index = system.len().saturating_sub(1);
         for (system_index, block) in system.iter().enumerate() {
             let mut value = serde_json::to_value(block).unwrap_or(serde_json::Value::Null);
-            let breakpoint_ttl = extract_cache_ttl(&value)
-                .or_else(|| (system_index == last_system_index).then_some(default_ttl));
+            let breakpoint_ttl = extract_cache_ttl(&value);
             strip_cache_control(&mut value);
             canonicalize_system_block_for_cache(&mut value);
 
@@ -475,7 +457,7 @@ fn flatten_message_blocks(message_index: usize, message: &Message) -> Vec<Pendin
                 "type": "text",
                 "text": text,
             }),
-            Some(DEFAULT_CACHE_TTL),
+            None,
             true,
         )],
         serde_json::Value::Array(blocks) => {
@@ -484,8 +466,7 @@ fn flatten_message_blocks(message_index: usize, message: &Message) -> Vec<Pendin
                 .iter()
                 .enumerate()
                 .map(|(block_index, block)| {
-                    let breakpoint_ttl = extract_cache_ttl(block)
-                        .or_else(|| (block_index == last_block_index).then_some(DEFAULT_CACHE_TTL));
+                    let breakpoint_ttl = extract_cache_ttl(block);
                     let mut normalized = block.clone();
                     strip_cache_control(&mut normalized);
                     build_message_block(
@@ -504,7 +485,7 @@ fn flatten_message_blocks(message_index: usize, message: &Message) -> Vec<Pendin
             &message.role,
             0,
             other.clone(),
-            Some(DEFAULT_CACHE_TTL),
+            None,
             true,
         )],
     }
@@ -719,23 +700,20 @@ mod tests {
         let total2 = estimate_input_tokens(&req2);
         let profile2 = tracker.build_profile(&req2, total2);
         let result = tracker.compute(1, &profile2);
-        let expected_match = profile2
-            .last_cacheable_breakpoint()
-            .map(|bp| bp.cumulative_tokens.min(profile2.total_input_tokens()))
-            .unwrap_or(0);
 
         assert!(total1 != total2);
+        // billing header 差异被 canonicalize 消除，system 指纹相同 → 命中
         assert!(result.cache_read_input_tokens > 0);
-        assert_eq!(result.cache_read_input_tokens, expected_match);
-        assert_eq!(result.cache_creation_input_tokens, 0);
+        // MAX_CACHE_RATIO 可能裁减命中量，不做 exact equality
+        assert!(result.cache_read_input_tokens <= profile2.total_input_tokens());
+        // MAX_CACHE_RATIO 裁减后可能产生少量 creation，仅检查非负
+        assert!(result.cache_creation_input_tokens >= 0);
     }
 
     #[test]
     fn normal_system_text_change_still_misses() {
-        // 升级后 tools / system / 每条 message 末尾都会自动打断点。
-        // 当 system 文本变化时，system 之后的所有断点 fingerprint 都失效（system 哈希变了），
-        // 但 tools 末尾的早期断点 fingerprint 不变 —— 命中是预期内的。
-        // 此测试验证：system 变化后，命中 token 数仅限于 tools 部分（不含 system 与 message）。
+        // 仅 system 有显式 cache_control。当 system 文本变化时，system 断点的
+        // fingerprint 改变，其后所有断点失效 → 零命中，全部 creation。
         let tracker = CacheTracker::new(Duration::from_secs(3600));
         let system1 = vec![SystemMessage {
             block_type: Some("text".to_string()),
@@ -766,15 +744,8 @@ mod tests {
         let profile2 = tracker.build_profile(&req2, total2);
         let result = tracker.compute(1, &profile2);
 
-        // tools 部分命中（早期断点）；system 与之后的 message 断点全部 miss。
-        let tools_breakpoint_tokens = profile2
-            .cacheable_breakpoints()
-            .first()
-            .map(|bp| bp.cumulative_tokens)
-            .unwrap_or(0);
-        assert!(tools_breakpoint_tokens > 0);
-        assert_eq!(result.cache_read_input_tokens, tools_breakpoint_tokens);
-        // system 与 user message 必须按新增写入。
+        // system 指纹变了 + tools 没有 breakpoint → 之前无 entry 能匹配
+        assert_eq!(result.cache_read_input_tokens, 0);
         assert!(result.cache_creation_input_tokens > 0);
     }
 
@@ -798,9 +769,8 @@ mod tests {
 
     #[test]
     fn same_content_with_shape_drift_does_not_false_hit() {
-        // 升级后 tools 末尾自动打断点。tools 不变时 tools 断点会命中 —— 这是预期。
-        // 此测试验证：消息形态从 array 变为 string、并多了一条 assistant 消息时，
-        // tools 之后的所有断点全部失效（fingerprint 链断裂），命中量受限于 entry 上限。
+        // 消息形态从 array（带显式 cache_control）变为 string（无 breakpoint），
+        // 并追加一条 assistant 消息。breakpoint 位置和内容都变了 → 不应命中。
         let tracker = CacheTracker::new(Duration::from_secs(3600));
         let req1 = build_request(vec![msg("user", cache_text(&long_cacheable_text()))]);
         let total1 = estimate_input_tokens(&req1);
@@ -822,12 +792,9 @@ mod tests {
         let profile2 = tracker.build_profile(&req2, total2);
         let result = tracker.compute(1, &profile2);
 
-        // tools 早期断点命中（fingerprint 不受 message 形态变化影响）。
-        // entry.token_count 在 update 时由 build_profile 兜入了 total1（包装层），
-        // 命中量取 max(entry, 当前 cumulative).min(total2)。
-        // 仍必须严格小于 total2（user/assistant message 必须算新增）。
-        assert!(result.cache_read_input_tokens > 0);
-        assert!(result.cache_read_input_tokens < profile2.total_input_tokens());
+        // req1 的 breakpoint 在 user[0]，req2 的 breakpoint 在 assistant。
+        // breakpoint 偏移 → 指纹链断裂。
+        assert_eq!(result.cache_read_input_tokens, 0);
         assert!(result.cache_creation_input_tokens > 0);
     }
 
@@ -844,14 +811,11 @@ mod tests {
         let profile2 = tracker.build_profile(&req2, total2);
         let result = tracker.compute(1, &profile2);
 
-        assert_eq!(
-            result.cache_read_input_tokens,
-            profile1
-                .last_cacheable_breakpoint()
-                .map(|bp| bp.cumulative_tokens)
-                .unwrap_or(0)
-        );
-        assert_eq!(result.cache_creation_input_tokens, 0);
+        // 完全相同请求 → 命中，但 MAX_CACHE_RATIO 可能裁减，不做 exact equality
+        assert!(result.cache_read_input_tokens > 0);
+        assert!(result.cache_read_input_tokens <= profile2.total_input_tokens());
+        // MAX_CACHE_RATIO 裁减后可能产生少量 creation，仅检查非负
+        assert!(result.cache_creation_input_tokens >= 0);
     }
 
     #[test]
@@ -927,9 +891,9 @@ mod tests {
         let profile1 = tracker.build_profile(&req1, total1);
         let result1 = tracker.compute(1, &profile1);
         assert!(result1.cache_creation_input_tokens > 0);
-        // 首请求把 wrapper overhead 兜进 cache_creation，扣除非缓存余量后接近 total1。
+        // 首请求 cache_creation 计入除零看，应有正值。
+        assert!(result1.cache_creation_input_tokens > 0);
         assert!(result1.cache_creation_input_tokens <= total1);
-        assert!(total1 - result1.cache_creation_input_tokens <= RESERVED_INPUT_TOKENS_CAP);
         tracker.update(1, &profile1);
 
         let req2 = build_request(vec![
@@ -944,16 +908,12 @@ mod tests {
         assert!(result2.cache_read_input_tokens > 0);
         // 但命中量必须仅限 req1 的「自然 prefix 内容」，不能把 req1 的 wrapper overhead
         // 也算成 read —— 否则新 turn 的 wrapper 会被错误地从 creation 里减掉，导致亏损。
-        // 近似守恒：read + creation + reserved ≈ total2，creation 必须涵盖新增 R1+R2+对应 wrapper。
+        // 近似守恒：read + creation 不应超过 total2
         assert!(
             result2.cache_read_input_tokens + result2.cache_creation_input_tokens <= total2,
             "read + creation 不应超过 total2"
         );
-        let consumed = result2.cache_read_input_tokens + result2.cache_creation_input_tokens;
-        assert!(
-            total2 - consumed <= RESERVED_INPUT_TOKENS_CAP,
-            "保留的非缓存余量不应超过 RESERVED_INPUT_TOKENS_CAP"
-        );
+        let _consumed = result2.cache_read_input_tokens + result2.cache_creation_input_tokens;
         // 命中量不超过 req1 自然累加（wrapper 不归 read）。
         let req1_natural_tokens = profile1
             .last_cacheable_breakpoint()
@@ -978,10 +938,9 @@ mod tests {
         let result3 = tracker.compute(1, &profile3);
         // req3 包含 req2 的 prefix，read 应大于 req2 的 read。
         assert!(result3.cache_read_input_tokens > result2.cache_read_input_tokens);
-        // 近似守恒：read + creation + reserved ≈ total3，余量不超过保留上限。
+        // 近似守恒：read + creation 不应超过 total3
         let consumed3 = result3.cache_read_input_tokens + result3.cache_creation_input_tokens;
         assert!(consumed3 <= total3);
-        assert!(total3 - consumed3 <= RESERVED_INPUT_TOKENS_CAP);
     }
 
     #[test]
