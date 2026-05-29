@@ -1,4 +1,7 @@
 /** @type {import('tailwindcss').Config} */
+// 注意：Tailwind v4 默认不再自动读取本文件。dark 变体与主题 token
+// 现在在 src/index.css 中通过 @custom-variant / @theme 声明。
+// 此文件保留仅作 content 路径与意图说明参考。
 export default {
   darkMode: 'class',
   content: [

@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.1.36] - 2026-05-29
+
+### Fixed
+- **修复 Admin UI 日/夜间模式失效与配色** — Tailwind v4 不再自动读取 `tailwind.config.js` 的 `darkMode: 'class'`，导致 `dark:` 工具类回退到系统 `prefers-color-scheme` 而与顶部切换按钮的 `.dark` class 脱节，凭据等操作卡片在夜间模式下被强制留白、文字挤压难读。现在在 `src/index.css` 显式声明 `@custom-variant dark (&:where(.dark, .dark *))` 让 dark 变体真正跟随 `.dark` class；同时重做深/浅主题调色板（深色基底低于卡片以制造层次、muted 文字提亮保证对比度），将凭据卡片及内部面板由硬编码 `slate-*`/`white` 迁移到主题 token (`bg-card` / `bg-muted` / `text-foreground` / `text-muted-foreground` / `border-border`) (`admin-ui/src/index.css`, `admin-ui/tailwind.config.js`, `admin-ui/src/components/credential-card.tsx`, `admin-ui/src/components/credential-detail-dialog.tsx`)
+
+### Added
+- **主题持久化与防首屏闪烁** — 主题偏好保存到 `localStorage`（key `adminTheme`，未设置时跟随系统），并在 `index.html` 首屏渲染前内联应用 `.dark` class，消除刷新时的亮/暗闪烁；Dashboard 切换按钮同步持久化 (`admin-ui/src/lib/storage.ts`, `admin-ui/index.html`, `admin-ui/src/components/dashboard.tsx`)
+
 ## [v1.1.35] - 2026-05-29
 
 ### Added
