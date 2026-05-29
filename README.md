@@ -19,7 +19,7 @@
 - **Overages 在线启停与状态同步**：Admin UI 支持 SSE 实时开启/关闭 Overages；后端会从 Web Portal 与 `GetUserUsageAndLimits` 同步 overage 状态，并持久化到凭据。
 - **Overage-aware 余额与自动禁用**：余额展示、缓存与自动禁用逻辑使用“基础额度 + 超额额度”的有效额度；上游未返回 `overageEnabled` 时不会误判为关闭。
 - **Admin 详情页白屏修复与全局模型列表**：修复凭据详情渲染问题；固定 `/v1/models` 能力列表不再在每个凭据详情重复显示，改为 Admin 顶部全局“可用模型”。
-- **Thinking 兼容增强**：`claude-opus-4-7-thinking` 与 `claude-opus-4-6-thinking` 一样走 adaptive thinking；客户端即使选择不带 `-thinking` 的模型，只要请求带 `thinking` 参数也会启用思考。
+- **Thinking 兼容增强**：`claude-opus-4-7-thinking` / `claude-opus-4-8-thinking` 与 `claude-opus-4-6-thinking` 一样走 adaptive thinking；客户端即使选择不带 `-thinking` 的模型，只要请求带 `thinking` 参数也会启用思考。
 - **Release 与 Docker Hub 自动构建**：保留多平台二进制 release workflow，并在 push tag `v*` 时自动构建 Docker Hub 镜像。
 
 镜像：`foxfishs/kiro-rs:latest`（不含本次修复的请用上游镜像 `ghcr.io/hank9999/kiro-rs:latest`）。
@@ -533,7 +533,7 @@ Thinking 配置规则：
 
 - 模型名带 `-thinking` 后缀时会自动启用 thinking。
 - 支持强度后缀：`-thinking-minimal`、`-thinking-low`、`-thinking-medium`、`-thinking-high`、`-thinking-xhigh`。
-- 对 `claude-opus-4-6-thinking`、`claude-opus-4-7-thinking`、`claude-sonnet-4-6-thinking` 使用 Kiro 侧需要的 `adaptive` thinking，并设置 `output_config.effort = "high"`。
+- 对 `claude-opus-4-6-thinking`、`claude-opus-4-7-thinking`、`claude-opus-4-8-thinking`、`claude-sonnet-4-6-thinking` 使用 Kiro 侧需要的 `adaptive` thinking，并设置 `output_config.effort = "high"`。
 - 模型名不带 `-thinking` 时，只要客户端请求携带 `thinking` 参数也会启用思考；`budget_tokens` 使用客户端传入值。
 - 如果客户端携带 `thinking` 但预算缺失、为 `0` 或无效，则默认按 high 使用 `24576`。
 
@@ -571,6 +571,8 @@ Thinking 配置规则：
 | `*sonnet*`（含 4-6/4.6） | `claude-sonnet-4.6` |
 | `*sonnet*`（其他） | `claude-sonnet-4.5` |
 | `*opus*`（含 4-5/4.5） | `claude-opus-4.5` |
+| `*opus*`（含 4-7/4.7） | `claude-opus-4.7` |
+| `*opus*`（含 4-8/4.8） | `claude-opus-4.8` |
 | `*opus*`（其他） | `claude-opus-4.6` |
 | `*haiku*` | `claude-haiku-4.5` |
 

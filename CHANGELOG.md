@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.1.35] - 2026-05-29
+
+### Added
+- **新增 Opus 4.8 模型别名支持** — 在 `/v1/models` 中暴露 `claude-opus-4-8` 及其 `thinking` / `agentic` 变体，并在 Anthropic→Kiro 模型映射中补齐 `claude-opus-4-8` / `claude-opus-4.8` 解析；`claude-opus-4-8-thinking` 与 4.7 一致使用上游要求的 `adaptive` thinking + `output_config.effort = high`，Admin UI 可用模型对话框同步展示 4.8 三个条目 (`src/anthropic/handlers.rs`, `src/anthropic/converter.rs`, `admin-ui/src/components/available-models-dialog.tsx`, `README.md`)
+
 ## [v1.1.30] - 2026-05-08
 
 ### Fixed
