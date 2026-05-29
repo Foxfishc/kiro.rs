@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.1.37] - 2026-05-29
+
+### Fixed
+- **多账户 429 风暴下单次请求只重试前 3 个凭据就放弃** — 总重试次数此前固定为 `min(凭据数 × 2, MAX_TOTAL_RETRIES=3)`，导致即便配置了 10/50 个账户，单次请求遇到 429 也只在前 3 个凭据之间打转、无法遍历全部可用号。新增 `compute_max_retries(total, available)`：以可用凭据数为遍历下限（至少把每个可用号试一轮），常规按每凭据 2 轮预算，并将原硬上限改为防失控的绝对天花板 `ABSOLUTE_MAX_TOTAL_RETRIES=64`（仅约束膨胀，绝不把次数压到可用数以下）(`src/kiro/provider.rs`)
+
+### Added
+- **429 跨请求短冷却分类（避免反复撞同一个已限流凭据）** — 新增 `classify_429_cooldown`，在流式与 MCP 两个 429 分支统一接入：普通限速与账户级 “suspicious activity” 临时限制（`reason: null`、不含传统 rate-limit 字样，此前完全不冷却）现在会给凭据打**固定时长**短冷却，`acquire_context` 后续可零往返直接跳过已知限流的号，全员限流时由 `token_manager` 的 all-cooling 快路径带 `Retry-After` 快速 bail；`INSUFFICIENT_MODEL_CAPACITY`（region 容量不足，与账号无关）只切号不冷却。冷却时长有 `Retry-After` 用它、否则用默认窗口，统一 clamp 到 `[60, 300]s`，并始终以**显式时长**写入 `set_credential_cooldown_with_duration`，绝不走 `default_duration` 的 60→90→135s 指数累计路径（规避 Round 8 雪球）(`src/kiro/provider.rs`)
+
 ## [v1.1.36] - 2026-05-29
 
 ### Fixed
