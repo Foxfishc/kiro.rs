@@ -233,6 +233,7 @@ impl KiroProvider {
                                 usage_limit,
                                 Some(overage_enabled),
                                 Some(overage_cap),
+                                Some(resp.overage_capability().map(|s| s.to_string())),
                             );
                             if remaining < 1.0 {
                                 tm.mark_insufficient_balance(id);
@@ -275,6 +276,7 @@ impl KiroProvider {
                         usage_limit,
                         Some(overage_enabled),
                         Some(overage_cap),
+                        Some(resp.overage_capability().map(|s| s.to_string())),
                     );
                     tracing::debug!("凭据 #{} 余额缓存已刷新: {:.2}", id, remaining);
                     if remaining < 1.0 {

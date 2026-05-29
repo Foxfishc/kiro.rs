@@ -126,6 +126,8 @@ export function CredentialCard({
   const queriedOverageEnabled = balance?.overageEnabled ?? cachedBalance?.overageEnabled ?? credential.overageEnabled ?? null
   const overageEnabled = queriedOverageEnabled === true || credential.overageEnabling === true
   const overageCap = overageEnabled ? (balance?.overageCap ?? cachedBalance?.overageCap ?? 10000) : 0
+  const overageCapability = balance?.overageCapability ?? cachedBalance?.overageCapability ?? null
+  const overageSupported = overageCapability === 'OVERAGE_CAPABLE'
 
   const handleToggleDisabled = () => {
     setDisabled.mutate(
@@ -569,10 +571,12 @@ export function CredentialCard({
             <Button size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={(e) => { e.stopPropagation(); handleSingleVerify() }} disabled={verifyReport?.status === 'verifying'}>
               <CheckCircle2 className={`mr-1 h-3 w-3 ${verifyReport?.status === 'verifying' ? 'animate-spin' : ''}`} />单独测活
             </Button>
-            <Button size="sm" variant={overageEnabled ? 'outline' : 'secondary'} className="h-8 px-2 text-xs" onClick={(e) => { e.stopPropagation(); handleToggleOverage() }} disabled={overageRunning || (!credential.hasProfileArn && !overageEnabled)}>
-              {overageRunning ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Zap className="mr-1 h-3 w-3" />}
-              {overageEnabled ? '关闭 Overages' : overageRunning ? '开启中' : '开启 Overages'}
-            </Button>
+            {overageSupported || overageEnabled ? (
+              <Button size="sm" variant={overageEnabled ? 'outline' : 'secondary'} className="h-8 px-2 text-xs" onClick={(e) => { e.stopPropagation(); handleToggleOverage() }} disabled={overageRunning}>
+                {overageRunning ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Zap className="mr-1 h-3 w-3" />}
+                {overageEnabled ? '关闭 Overages' : overageRunning ? '开启中' : '开启 Overages'}
+              </Button>
+            ) : null}
             <Button size="sm" variant="default" className="h-8 px-2 text-xs bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900" onClick={(e) => { e.stopPropagation(); handleViewBalance() }}>
               <Wallet className="mr-1 h-3 w-3" />查看余额
             </Button>

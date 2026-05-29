@@ -170,8 +170,6 @@ export function CredentialDetailDialog({
   }
 
   // 开启超额
-  const isSocial = credential.authMethod === 'social'
-  const hasProfileArn = credential.hasProfileArn
 
   const handleEnableOverage = () => {
     setRunning(true)
@@ -215,6 +213,8 @@ export function CredentialDetailDialog({
   }
 
   const overageEnabled = overageStatus?.enabled ?? effectiveBalance?.overageEnabled ?? cachedBalance?.overageEnabled ?? credential.overageEnabled ?? null
+  const overageCapability = effectiveBalance?.overageCapability ?? cachedBalance?.overageCapability ?? null
+  const overageSupported = overageCapability === 'OVERAGE_CAPABLE'
   const effectiveBalanceTotalLimit = effectiveBalance?.usageLimit ?? 0
   const effectiveBalanceOverageCap = effectiveBalance?.overageEnabled ? (effectiveBalance.overageCap ?? 0) : 0
   const effectiveBalanceBaseLimit = effectiveBalance?.overageEnabled
@@ -439,7 +439,7 @@ export function CredentialDetailDialog({
                   >
                     关闭超额
                   </Button>
-                ) : isSocial && hasProfileArn ? (
+                ) : overageSupported ? (
                   <Button
                     size="sm"
                     className="h-7 text-xs"
@@ -560,8 +560,8 @@ export function CredentialDetailDialog({
               </div>
             )}
 
-            {isSocial && !hasProfileArn && !overageEnabled && (
-              <p className="text-xs text-muted-foreground">缺少 profileArn，请先刷新 Token 后再开启超额。</p>
+            {!overageSupported && !overageEnabled && (
+              <p className="text-xs text-muted-foreground">当前套餐不支持开启超额。</p>
             )}
 
             {/* 超额事件日志 */}

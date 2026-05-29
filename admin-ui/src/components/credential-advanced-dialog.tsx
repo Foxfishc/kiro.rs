@@ -117,10 +117,6 @@ export function CredentialAdvancedDialog({
 
   const handleEnableOverage = () => {
     if (running) return
-    if (!hasProfileArn) {
-      toast.error('凭据缺少 profileArn，无法开启超额（请先刷新 Token）')
-      return
-    }
     setEvents([])
     setRunning(true)
     streamRef.current = openOverageEnableStream(
@@ -164,8 +160,6 @@ export function CredentialAdvancedDialog({
     return <Badge variant="outline">未知</Badge>
   })()
 
-  const hasProfileArn =
-    overageStatus?.hasProfileArn ?? credential.hasProfileArn ?? false
   const authMethod = overageStatus?.authMethod ?? credential.authMethod ?? null
   const isSocial = !authMethod || authMethod === 'social'
 
@@ -178,7 +172,7 @@ export function CredentialAdvancedDialog({
             凭据 #{credential.id} 高级设置
           </DialogTitle>
           <DialogDescription>
-            Web Portal Idp、凭据级代理、开启超额（仅 social 凭据支持）
+            Web Portal Idp、凭据级代理、开启超额
           </DialogDescription>
         </DialogHeader>
 
@@ -281,7 +275,7 @@ export function CredentialAdvancedDialog({
               <Button
                 size="sm"
                 onClick={handleEnableOverage}
-                disabled={running || !isSocial || !hasProfileArn}
+                disabled={running}
               >
                 {running ? (
                   <>
@@ -297,9 +291,9 @@ export function CredentialAdvancedDialog({
                   仅 social 凭据支持 Web Portal
                 </span>
               )}
-              {isSocial && !hasProfileArn && (
+              {isSocial && (
                 <span className="text-xs text-muted-foreground">
-                  缺少 profileArn，请先刷新 Token
+                  凭据需先刷新 Token 后才能成功开启超额
                 </span>
               )}
             </div>

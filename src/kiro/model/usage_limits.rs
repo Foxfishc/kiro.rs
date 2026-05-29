@@ -48,6 +48,9 @@ pub struct SubscriptionInfo {
     /// 订阅标题 (KIRO PRO+ / KIRO FREE 等)
     #[serde(default)]
     pub subscription_title: Option<String>,
+    /// 订阅超额能力标识（"OVERAGE_CAPABLE" 表示支持超额）
+    #[serde(default)]
+    pub overage_capability: Option<String>,
 }
 
 /// 使用量明细
@@ -167,6 +170,13 @@ impl UsageLimitsResponse {
         self.subscription_info
             .as_ref()
             .and_then(|info| info.subscription_title.as_deref())
+    }
+
+    /// 获取订阅超额能力标识（"OVERAGE_CAPABLE" 表示该套餐支持开启超额）
+    pub fn overage_capability(&self) -> Option<&str> {
+        self.subscription_info
+            .as_ref()
+            .and_then(|info| info.overage_capability.as_deref())
     }
 
     /// 获取第一个使用量明细

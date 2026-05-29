@@ -190,12 +190,16 @@ async fn call_remote_count_tokens(
 }
 
 fn estimate_messages_tokens(messages: &[Message]) -> u64 {
-    if messages.is_empty() {
-        return 0;
-    }
-
-    let json = serde_json::to_string(messages).unwrap_or_default();
-    count_tokens(&json) + messages.len() as u64 * TOKENS_PER_MESSAGE
+    // 本地兜底应估算模型看到的消息内容，而不是 API JSON 编码体；
+    // 否则长历史和 tool_result 会被字段名/转义字符显著放大。
+    messages
+        .iter()
+        .map(|message| {
+            count_tokens(&message.role)
+                + count_message_content_tokens(&message.content)
+                + TOKENS_PER_MESSAGE
+        })
+        .sum()
 }
 
 fn count_serialized_value_tokens(value: &serde_json::Value) -> u64 {

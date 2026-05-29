@@ -71,6 +71,8 @@ export interface BalanceResponse {
   nextResetAt: number | null
   overageEnabled: boolean
   overageCap: number
+  /** 订阅超额能力标识（"OVERAGE_CAPABLE" 表示该套餐支持开启超额） */
+  overageCapability?: string | null
 }
 
 // 缓存余额信息
@@ -86,6 +88,8 @@ export interface CachedBalanceInfo {
   overageEnabled?: boolean
   /** 缓存快照里的超额额度上限 */
   overageCap?: number
+  /** 缓存快照里的订阅超额能力标识 */
+  overageCapability?: string | null
 }
 
 // 缓存余额响应

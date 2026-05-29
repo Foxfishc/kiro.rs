@@ -322,6 +322,12 @@ impl AdminService {
             usage_limit,
             Some(overage_enabled),
             Some(overage_cap),
+            Some(
+                usage
+                    .subscription_info
+                    .as_ref()
+                    .and_then(|info| info.overage_capability.clone()),
+            ),
         );
 
         Ok(BalanceResponse {
@@ -334,6 +340,10 @@ impl AdminService {
             next_reset_at: usage.next_date_reset,
             overage_enabled,
             overage_cap,
+            overage_capability: usage
+                .subscription_info
+                .as_ref()
+                .and_then(|info| info.overage_capability.clone()),
         })
     }
 
@@ -365,6 +375,7 @@ impl AdminService {
                         ttl_secs: info.ttl_secs,
                         overage_enabled: cached.data.overage_enabled,
                         overage_cap: cached.data.overage_cap,
+                        overage_capability: cached.data.overage_capability.clone(),
                     }
                 } else {
                     CachedBalanceItem {
@@ -383,6 +394,7 @@ impl AdminService {
                         ttl_secs: info.ttl_secs,
                         overage_enabled: info.overage_enabled,
                         overage_cap: info.overage_cap,
+                        overage_capability: info.overage_capability.clone(),
                     }
                 }
             })

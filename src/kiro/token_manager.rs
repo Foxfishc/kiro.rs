@@ -700,6 +700,8 @@ pub struct CachedBalanceInfo {
     pub overage_enabled: bool,
     /// 缓存快照里的超额额度上限（未开启时为 0）
     pub overage_cap: f64,
+    /// 缓存快照里的订阅超额能力标识（"OVERAGE_CAPABLE" 表示支持超额）
+    pub overage_capability: Option<String>,
 }
 
 /// 余额缓存条目
@@ -708,6 +710,8 @@ struct CachedBalance {
     usage_limit: f64,
     overage_enabled: bool,
     overage_cap: f64,
+    /// 订阅超额能力标识（"OVERAGE_CAPABLE" 表示支持超额）
+    overage_capability: Option<String>,
     cached_at: std::time::Instant,
     /// 是否已初始化（区分"未获取过余额"和"余额为零"）
     initialized: bool,
@@ -984,6 +988,7 @@ impl MultiTokenManager {
                         } else {
                             0.0
                         },
+                        overage_capability: None,
                         cached_at: now,
                         initialized: false,
                         recent_usage: 0,
@@ -1622,7 +1627,7 @@ impl MultiTokenManager {
 
     /// 更新余额缓存
     pub fn update_balance_cache(&self, id: u64, remaining: f64) {
-        self.update_balance_cache_details(id, remaining, 0.0, None, None);
+        self.update_balance_cache_details(id, remaining, 0.0, None, None, None);
     }
 
     /// 更新余额缓存，并同步 overage/总额度快照，供 Admin UI 凭证卡片直接展示。
@@ -1633,16 +1638,18 @@ impl MultiTokenManager {
         usage_limit: f64,
         overage_enabled: Option<bool>,
         overage_cap: Option<f64>,
+        overage_capability: Option<Option<String>>,
     ) {
         let mut cache = self.balance_cache.lock();
         let now = std::time::Instant::now();
-        // 保留现有使用计数
+        // 保留现有使用计数和超额能力值
         let (
             recent_usage,
             usage_reset_at,
             previous_usage_limit,
             previous_overage_enabled,
             previous_overage_cap,
+            previous_overage_capability,
         ) = cache
             .get(&id)
             .map(|e| {
@@ -1652,15 +1659,17 @@ impl MultiTokenManager {
                     e.usage_limit,
                     e.overage_enabled,
                     e.overage_cap,
+                    e.overage_capability.clone(),
                 )
             })
-            .unwrap_or((0, now, 0.0, false, 0.0));
+            .unwrap_or((0, now, 0.0, false, 0.0, None));
         let known_overage_enabled = overage_enabled.unwrap_or(previous_overage_enabled);
         let known_overage_cap = overage_cap.unwrap_or(if known_overage_enabled {
             previous_overage_cap.max(DEFAULT_OVERAGE_CAP)
         } else {
             0.0
         });
+        let known_overage_capability = overage_capability.flatten().or(previous_overage_capability);
         let known_usage_limit = if usage_limit > 0.0 {
             usage_limit
         } else if previous_usage_limit > 0.0 {
@@ -1677,6 +1686,7 @@ impl MultiTokenManager {
                 usage_limit: known_usage_limit,
                 overage_enabled: known_overage_enabled,
                 overage_cap: known_overage_cap,
+                overage_capability: known_overage_capability,
                 cached_at: now,
                 initialized: true,
                 recent_usage,
@@ -1710,6 +1720,7 @@ impl MultiTokenManager {
             previous_usage_limit,
             previous_overage_enabled,
             previous_overage_cap,
+            previous_overage_capability,
         ) = cache
             .get(&id)
             .map(|e| {
@@ -1719,9 +1730,10 @@ impl MultiTokenManager {
                     e.usage_limit,
                     e.overage_enabled,
                     e.overage_cap,
+                    e.overage_capability.clone(),
                 )
             })
-            .unwrap_or((0, now_instant, 0.0, false, 0.0));
+            .unwrap_or((0, now_instant, 0.0, false, 0.0, None));
 
         let known_overage_enabled = previous_overage_enabled;
         let known_overage_cap = if known_overage_enabled {
@@ -1744,6 +1756,7 @@ impl MultiTokenManager {
                 usage_limit: known_usage_limit,
                 overage_enabled: known_overage_enabled,
                 overage_cap: known_overage_cap,
+                overage_capability: previous_overage_capability,
                 cached_at: restored_cached_at,
                 initialized: true,
                 recent_usage,
@@ -1800,6 +1813,7 @@ impl MultiTokenManager {
                     } else {
                         0.0
                     },
+                    overage_capability: None,
                     cached_at: now,
                     initialized: false,
                     recent_usage: 1,
@@ -1853,6 +1867,7 @@ impl MultiTokenManager {
                         usage_limit: cached.usage_limit,
                         overage_enabled: cached.overage_enabled,
                         overage_cap: cached.overage_cap,
+                        overage_capability: cached.overage_capability.clone(),
                     }
                 })
             })
@@ -2536,6 +2551,7 @@ impl MultiTokenManager {
                         usage_limit,
                         Some(overage_enabled),
                         Some(overage_cap),
+                        Some(limits.overage_capability().map(|s| s.to_string())),
                     );
 
                     // 余额小于 1 时自动禁用凭据
@@ -2896,16 +2912,18 @@ impl MultiTokenManager {
             .access_token
             .clone()
             .ok_or_else(|| anyhow::anyhow!("凭据无 access_token"))?;
-        let profile_arn = final_creds
-            .profile_arn
-            .clone()
-            .filter(|s| !s.trim().is_empty());
         let idp = final_creds.effective_idp().to_string();
         if idp.is_empty() {
             anyhow::bail!(
                 "凭据未提供 idp 且无法从 auth_method 推断（仅 social 凭据支持 Web Portal）"
             );
         }
+        // 始终解析出有效的 profileArn：优先使用凭据自身的值，
+        // 缺失时根据 idp 回退到平台默认值（参考 Kiro-account-manager）
+        let profile_arn = Some(
+            crate::kiro::web_portal::resolve_profile_arn(final_creds.profile_arn.as_deref(), &idp)
+                .to_string(),
+        );
         let proxy = final_creds.effective_proxy(self.proxy.read().as_ref());
         Ok(WebPortalContext {
             id,
@@ -3250,6 +3268,7 @@ impl MultiTokenManager {
                     usage_limit: 0.0,
                     overage_enabled: false,
                     overage_cap: 0.0,
+                    overage_capability: None,
                     cached_at: now,
                     initialized: true,
                     recent_usage: baseline_usage,

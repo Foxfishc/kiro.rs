@@ -233,6 +233,8 @@ pub struct BalanceResponse {
     pub overage_enabled: bool,
     /// 上游返回/兜底后的超额额度上限（未开启时为 0）
     pub overage_cap: f64,
+    /// 订阅超额能力标识（"OVERAGE_CAPABLE" 表示该套餐支持开启超额）
+    pub overage_capability: Option<String>,
 }
 
 /// 缓存余额信息
@@ -257,6 +259,8 @@ pub struct CachedBalanceItem {
     pub overage_enabled: bool,
     /// 缓存快照里的超额额度上限（未开启时为 0）
     pub overage_cap: f64,
+    /// 缓存快照里的订阅超额能力标识（"OVERAGE_CAPABLE" 表示支持超额）
+    pub overage_capability: Option<String>,
 }
 
 /// 所有凭据的缓存余额响应

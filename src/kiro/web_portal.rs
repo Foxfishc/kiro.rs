@@ -26,6 +26,35 @@ const SMITHY_PROTOCOL: &str = "rpc-v2-cbor";
 const AMZ_SDK_REQUEST: &str = "attempt=1; max=1";
 const X_AMZ_USER_AGENT: &str = "aws-sdk-js/1.0.0 kiro-rs/1.0.0";
 
+/// Social 登录（Google/GitHub）默认使用的 Profile ARN。
+/// 参考 Kiro-account-manager：social 凭据即使自身没有 profileArn，
+/// 也可以用这个公共 ARN 提交 UpdateBillingPreferences。
+pub const DEFAULT_SOCIAL_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
+
+/// Builder ID 登录默认使用的 Profile ARN。
+pub const DEFAULT_BUILDER_ID_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
+
+/// 根据认证方式解析有效的 Profile ARN。
+///
+/// 如果凭据自身有 profileArn 则直接使用；否则根据 idp/auth_method 回退到平台默认值。
+/// 与 Kiro-account-manager 的 `resolveProfileArn` 逻辑对齐。
+pub fn resolve_profile_arn<'a>(credential_profile_arn: Option<&'a str>, idp: &str) -> &'a str {
+    if let Some(arn) = credential_profile_arn
+        && !arn.trim().is_empty()
+    {
+        return arn;
+    }
+    // idp 为空或非 social 时使用 builder id 默认值
+    let idp_lower = idp.to_lowercase();
+    if idp_lower.contains("google") || idp_lower.contains("github") {
+        DEFAULT_SOCIAL_PROFILE_ARN
+    } else {
+        DEFAULT_BUILDER_ID_PROFILE_ARN
+    }
+}
+
 /// 调用写操作（如 UpdateBillingPreferences）必需的 CSRF 会话上下文
 ///
 /// 通过带 Cookie 访问 `https://app.kiro.dev/` 拿到 HTML，从两个 meta 标签提取：
