@@ -56,6 +56,14 @@ export function Dashboard({ onLogout }: DashboardProps) {
     return false
   })
 
+  // 首屏同步：确保 React 状态与 index.html 提前应用的 .dark class 一致，
+  // 并把当前主题持久化（兼容旧版本未存储 adminTheme 的情况）。
+  useEffect(() => {
+    const isDark = storage.getTheme() === 'dark'
+    document.documentElement.classList.toggle('dark', isDark)
+    setDarkMode(isDark)
+  }, [])
+
   const queryClient = useQueryClient()
   const { data, isLoading, error, refetch } = useCredentials()
   const { data: cachedBalancesData } = useCachedBalances()
@@ -147,8 +155,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
   }, [data?.credentials])
 
   const toggleDarkMode = () => {
-    setDarkMode(!darkMode)
-    document.documentElement.classList.toggle('dark')
+    const next = !darkMode
+    setDarkMode(next)
+    document.documentElement.classList.toggle('dark', next)
+    storage.setTheme(next ? 'dark' : 'light')
   }
 
   const handleViewBalance = (id: number, forceRefresh: boolean) => {

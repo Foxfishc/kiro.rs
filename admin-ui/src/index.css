@@ -1,10 +1,13 @@
 @import "tailwindcss";
 
-/* Tailwind v4 默认 dark: 跟随系统主题，这里改为跟随页面内的 html.dark 开关 */
+/* Tailwind v4 不再自动读取 tailwind.config.js 的 darkMode 设置，
+   这里显式声明 dark: 变体跟随 .dark class（而非 prefers-color-scheme），
+   使顶部的日/夜切换按钮能真正驱动所有 dark: 工具类。 */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* 自定义主题配置 */
-@theme {
+/* 自定义主题配置（inline 让工具类在使用处实时解析运行时变量，
+   从而 .dark 覆盖能即时生效） */
+@theme inline {
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -38,56 +41,103 @@
 }
 
 :root {
-  --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
+  /* 浅色：柔和的近白底 + 纯白卡片，制造层次感 */
+  --background: 210 40% 98%;
+  --foreground: 222 47% 11%;
   --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
+  --card-foreground: 222 47% 11%;
   --popover: 0 0% 100%;
-  --popover-foreground: 222.2 84% 4.9%;
-  --primary: 222.2 47.4% 11.2%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 222 47% 11%;
   --primary-foreground: 210 40% 98%;
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
-  --destructive: 0 84.2% 60.2%;
+  --secondary: 210 40% 94%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 210 40% 94%;
+  --muted-foreground: 215 16% 42%;
+  --accent: 210 40% 94%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 72% 51%;
   --destructive-foreground: 210 40% 98%;
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
-  --ring: 222.2 84% 4.9%;
-  --radius: 0.5rem;
+  --border: 214 32% 89%;
+  --input: 214 32% 89%;
+  --ring: 222 47% 11%;
+  --radius: 0.65rem;
 }
 
 .dark {
-  --background: 222.2 84% 4.9%;
+  /* 深色：真正的深色基底（bg 比 card 更暗 → 卡片有抬升层次），
+     文字高对比度，muted 文字提亮到 70% 保证可读性 */
+  --background: 222 47% 7%;
   --foreground: 210 40% 98%;
-  --card: 222.2 84% 4.9%;
+  --card: 222 41% 11%;
   --card-foreground: 210 40% 98%;
-  --popover: 222.2 84% 4.9%;
+  --popover: 222 44% 9%;
   --popover-foreground: 210 40% 98%;
   --primary: 210 40% 98%;
-  --primary-foreground: 222.2 47.4% 11.2%;
-  --secondary: 217.2 32.6% 17.5%;
+  --primary-foreground: 222 47% 11%;
+  --secondary: 217 33% 18%;
   --secondary-foreground: 210 40% 98%;
-  --muted: 217.2 32.6% 17.5%;
-  --muted-foreground: 215 20.2% 65.1%;
-  --accent: 217.2 32.6% 17.5%;
+  --muted: 217 33% 16%;
+  --muted-foreground: 215 20% 70%;
+  --accent: 217 33% 20%;
   --accent-foreground: 210 40% 98%;
-  --destructive: 0 62.8% 30.6%;
+  --destructive: 0 63% 31%;
   --destructive-foreground: 210 40% 98%;
-  --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
-  --ring: 212.7 26.8% 83.9%;
+  --border: 217 33% 20%;
+  --input: 217 33% 22%;
+  --ring: 213 27% 84%;
 }
 
 * {
   border-color: hsl(var(--border));
 }
 
+html {
+  /* 主题切换平滑过渡 */
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+/* 主题切换时背景/文字/边框平滑过渡，避免生硬闪切 */
+body,
+.transition-theme {
+  transition:
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease;
+}
+
+/* 自定义滚动条，深浅两色协调 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.55);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
 }

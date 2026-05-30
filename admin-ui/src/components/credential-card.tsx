@@ -372,7 +372,7 @@ export function CredentialCard({
   return (
     <>
       <Card
-        className="cursor-pointer border-slate-200 bg-white text-slate-950 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md dark:border-slate-700 dark:bg-slate-950 dark:text-slate-50"
+        className="cursor-pointer border-border bg-card text-card-foreground shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5"
         onClick={(e) => {
           const target = e.target as HTMLElement
           if (
@@ -413,7 +413,7 @@ export function CredentialCard({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <span className="text-xs text-slate-600 dark:text-slate-300">启用</span>
+              <span className="text-xs text-muted-foreground">启用</span>
               <Switch
                 checked={!credential.disabled}
                 onCheckedChange={handleToggleDisabled}
@@ -425,7 +425,7 @@ export function CredentialCard({
         <CardContent className="space-y-3 text-xs">
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-600 dark:text-slate-300">优先级：</span>
+              <span className="text-muted-foreground">优先级：</span>
               {editingPriority ? (
                 <div className="inline-flex items-center gap-1">
                   <Input
@@ -449,61 +449,61 @@ export function CredentialCard({
               )}
             </div>
             <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-600 dark:text-slate-300">失败次数：</span>
+              <span className="text-muted-foreground">失败次数：</span>
               <span className={credential.failureCount > 0 ? 'font-medium text-red-500' : 'font-medium'}>{formatInteger(credential.failureCount)}</span>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-600 dark:text-slate-300">刷新失败：</span>
+              <span className="text-muted-foreground">刷新失败：</span>
               <span className={credential.refreshFailureCount > 0 ? 'font-medium text-red-500' : 'font-medium'}>{formatInteger(credential.refreshFailureCount)}</span>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-600 dark:text-slate-300">订阅等级：</span>
+              <span className="text-muted-foreground">订阅等级：</span>
               <span className="font-medium truncate">
                 {loadingBalance ? <Loader2 className="inline h-3 w-3 animate-spin" /> : balance?.subscriptionTitle ?? cachedBalance?.subscriptionTitle ?? credential.subscriptionTitle ?? '未知'}
               </span>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-600 dark:text-slate-300">成功次数：</span>
+              <span className="text-muted-foreground">成功次数：</span>
               <span className="font-medium">{formatInteger(credential.successCount ?? credential.callsOk)}</span>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <span className="text-slate-600 dark:text-slate-300">最后调用：</span>
+              <span className="text-muted-foreground">最后调用：</span>
               <span className="font-medium">{formatLastUsed(credential.lastUsedAt || credential.lastCallAt)}</span>
             </div>
           </div>
 
           {balanceDisplay && 'loading' in balanceDisplay && balanceDisplay.loading && (
-            <div className="flex items-center gap-1 rounded-md bg-slate-100 px-2 py-2 text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+            <div className="flex items-center gap-1 rounded-md bg-muted px-2 py-2 text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> 加载余额...
             </div>
           )}
 
           {balanceDisplay && !('loading' in balanceDisplay && balanceDisplay.loading) && 'percentage' in balanceDisplay && (
-            <div className="space-y-1.5 rounded-md border border-slate-200 bg-slate-50/90 p-2 text-slate-950 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50">
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/50 p-2 text-foreground">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-slate-600 dark:text-slate-300">已使用：</span>
+                <span className="text-muted-foreground">已使用：</span>
                 <span className="font-medium">
                   {formatNumber(used, 2)} / {formatNumber(limit, 2)} ({formatNumber(percentage, 1)}% 已用)
                 </span>
               </div>
-              <Progress value={percentage ?? 0} className="h-2 bg-slate-200 dark:bg-slate-700" />
+              <Progress value={percentage ?? 0} className="h-2 bg-muted" />
               {'cached' in balanceDisplay && balanceDisplay.cached && (
-                <div className="text-[11px] text-slate-600 dark:text-slate-300">{balanceDisplay.cacheAge}缓存</div>
+                <div className="text-[11px] text-muted-foreground">{balanceDisplay.cacheAge}缓存</div>
               )}
               {overageEnabled && (
                 <div className="space-y-1 text-[11px]">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium text-purple-600 dark:text-purple-300">Overages：Enabled</span>
-                    <span className="text-slate-600 dark:text-slate-300">总额度 = 基础 {formatNumber(baseLimit, 0)} + 超额 {formatNumber(overageCap, 0)}</span>
+                    <span className="text-muted-foreground">总额度 = 基础 {formatNumber(baseLimit, 0)} + 超额 {formatNumber(overageCap, 0)}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-slate-600 dark:text-slate-300">超额用量：</span>
+                    <span className="text-muted-foreground">超额用量：</span>
                     {overageUsed !== null && overageUsed > 0 ? (
-                      <span className="text-slate-600 dark:text-slate-300">
+                      <span className="text-muted-foreground">
                         {formatNumber(overageUsed, 2)} / {formatNumber(overageCap, 2)}，${formatNumber(overageCost, 2)}
                       </span>
                     ) : (
-                      <span className="text-slate-600 dark:text-slate-300">0 / {formatNumber(overageCap, 0)}</span>
+                      <span className="text-muted-foreground">0 / {formatNumber(overageCap, 0)}</span>
                     )}
                   </div>
                 </div>
@@ -512,15 +512,15 @@ export function CredentialCard({
           )}
 
           {!balanceDisplay && overageEnabled && (
-            <div className="rounded-md border border-slate-200 bg-slate-50/90 p-2 text-slate-950 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50">
+            <div className="rounded-md border border-border bg-muted/50 p-2 text-foreground">
               <span className="font-medium text-purple-600 dark:text-purple-300">Overages：Enabled</span>
-              <span className="ml-2 text-slate-600 dark:text-slate-300">可额外使用 {formatNumber(overageCap, 0)}</span>
+              <span className="ml-2 text-muted-foreground">可额外使用 {formatNumber(overageCap, 0)}</span>
             </div>
           )}
 
           <div className="space-y-1.5">
             {editingEndpointRegion ? (
-              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/90 p-2 text-slate-950 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50" onClick={(e) => e.stopPropagation()}>
+              <div className="space-y-2 rounded-md border border-border bg-muted/50 p-2 text-foreground" onClick={(e) => e.stopPropagation()}>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                   <Input className="h-7 text-xs" placeholder="Endpoint（留空默认）" value={endpointValue} onChange={(e) => setEndpointValue(e.target.value)} />
                   <Input className="h-7 text-xs" placeholder="Region（留空默认）" value={regionValue} onChange={(e) => setRegionValue(e.target.value)} />
@@ -533,12 +533,12 @@ export function CredentialCard({
               </div>
             ) : (
               <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 text-slate-600 dark:text-slate-300">Endpoint：<span className="font-mono text-slate-950 dark:text-slate-50">{credential.endpoint || '默认'} ({credential.effectiveEndpoint})</span></div>
+                <div className="min-w-0 text-muted-foreground">Endpoint：<span className="font-mono text-foreground">{credential.endpoint || '默认'} ({credential.effectiveEndpoint})</span></div>
                 <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={(e) => { e.stopPropagation(); setEditingEndpointRegion(true) }}>编辑</Button>
               </div>
             )}
             <div className="flex items-start gap-2">
-              <span className="shrink-0 text-slate-600 dark:text-slate-300">代理：</span>
+              <span className="shrink-0 text-muted-foreground">代理：</span>
               <span className="min-w-0 truncate font-mono text-[11px]" title={proxyDisplay}>{proxyDisplay}</span>
             </div>
             <div className="flex flex-wrap gap-1.5">
@@ -577,7 +577,7 @@ export function CredentialCard({
                 {overageEnabled ? '关闭 Overages' : overageRunning ? '开启中' : '开启 Overages'}
               </Button>
             ) : null}
-            <Button size="sm" variant="default" className="h-8 px-2 text-xs bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900" onClick={(e) => { e.stopPropagation(); handleViewBalance() }}>
+            <Button size="sm" variant="default" className="h-8 px-2 text-xs" onClick={(e) => { e.stopPropagation(); handleViewBalance() }}>
               <Wallet className="mr-1 h-3 w-3" />查看余额
             </Button>
           </div>
@@ -658,41 +658,41 @@ export function CredentialCard({
 
             <div className="grid gap-2 rounded-md border p-3 text-xs">
               <div className="flex justify-between gap-3">
-                <span className="text-slate-600 dark:text-slate-300">凭据 ID：</span>
+                <span className="text-muted-foreground">凭据 ID：</span>
                 <span className="font-medium">#{credential.id}</span>
               </div>
               <div className="flex justify-between gap-3">
-                <span className="text-slate-600 dark:text-slate-300">认证方式：</span>
+                <span className="text-muted-foreground">认证方式：</span>
                 <span className="font-medium capitalize">{credential.authMethod || 'unknown'}</span>
               </div>
               <div className="flex justify-between gap-3">
-                <span className="text-slate-600 dark:text-slate-300">Endpoint：</span>
+                <span className="text-muted-foreground">Endpoint：</span>
                 <span className="font-medium">{credential.effectiveEndpoint || credential.endpoint || 'ide'}</span>
               </div>
               <div className="flex items-start justify-between gap-3">
-                <span className="shrink-0 text-slate-600 dark:text-slate-300">代理：</span>
+                <span className="shrink-0 text-muted-foreground">代理：</span>
                 <span className="min-w-0 break-all text-right font-mono">{proxyDisplay}</span>
               </div>
               <div className="flex justify-between gap-3">
-                <span className="text-slate-600 dark:text-slate-300">Profile ARN：</span>
+                <span className="text-muted-foreground">Profile ARN：</span>
                 <span className="font-medium">{credential.hasProfileArn ? '有' : '无'}</span>
               </div>
               {verifyDurationSecs && (
                 <div className="flex justify-between gap-3">
-                  <span className="text-slate-600 dark:text-slate-300">耗时：</span>
+                  <span className="text-muted-foreground">耗时：</span>
                   <span className="font-medium">{verifyDurationSecs} 秒</span>
                 </div>
               )}
             </div>
 
             {verifyBalance && (
-              <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/70 p-3 text-slate-950 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50">
+              <div className="space-y-2 rounded-md border border-border bg-muted/50 p-3 text-foreground">
                 <div className="flex justify-between gap-3 text-xs">
-                  <span className="text-slate-600 dark:text-slate-300">订阅等级：</span>
+                  <span className="text-muted-foreground">订阅等级：</span>
                   <span className="font-medium">{verifyBalance.subscriptionTitle || '未知'}</span>
                 </div>
                 <div className="flex justify-between gap-3 text-xs">
-                  <span className="text-slate-600 dark:text-slate-300">已使用：</span>
+                  <span className="text-muted-foreground">已使用：</span>
                   <span className="font-medium">
                     {formatNumber(verifyBalance.currentUsage)} / {formatNumber(verifyTotalLimit)} ({formatNumber(verifyUsagePercentage, 1)}% 已用)
                   </span>
@@ -701,21 +701,21 @@ export function CredentialCard({
                 {verifyBalance.overageEnabled && (
                   <div className="space-y-1 rounded border border-purple-200 bg-purple-50/70 p-2 text-xs dark:border-purple-800 dark:bg-purple-950/40">
                     <div className="flex justify-between gap-3">
-                      <span className="text-slate-600 dark:text-slate-300">Overages：</span>
+                      <span className="text-muted-foreground">Overages：</span>
                       <span className="font-medium text-purple-600 dark:text-purple-300">Enabled</span>
                     </div>
                     <div className="flex justify-between gap-3">
-                      <span className="text-slate-600 dark:text-slate-300">总额度：</span>
+                      <span className="text-muted-foreground">总额度：</span>
                       <span className="font-medium">基础 {formatNumber(verifyBaseLimit, 0)} + 超额 {formatNumber(verifyCap, 0)}</span>
                     </div>
                     <div className="flex justify-between gap-3">
-                      <span className="text-slate-600 dark:text-slate-300">超额用量：</span>
+                      <span className="text-muted-foreground">超额用量：</span>
                       <span className="font-medium">{formatNumber(verifyOverageUsed)} / {formatNumber(verifyCap)}{verifyOverageUsed > 0 ? `，$${formatNumber(verifyOverageCost)}` : ''}</span>
                     </div>
                   </div>
                 )}
                 <div className="flex justify-between gap-3 text-xs">
-                  <span className="text-slate-600 dark:text-slate-300">剩余额度：</span>
+                  <span className="text-muted-foreground">剩余额度：</span>
                   <span className="font-medium text-green-600">{formatNumber(verifyRemaining)}</span>
                 </div>
               </div>

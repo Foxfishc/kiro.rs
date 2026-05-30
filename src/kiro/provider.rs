@@ -38,8 +38,12 @@ pub struct McpCallResult {
 /// 每个凭据的最大重试次数
 const MAX_RETRIES_PER_CREDENTIAL: usize = 2;
 
-/// 总重试次数硬上限（避免无限重试）
-const MAX_TOTAL_RETRIES: usize = 3;
+/// 总重试次数的防御性硬上限（仅防止极端账户数导致单次请求重试失控）。
+///
+/// 注意：这是绝对天花板，不是固定上限。`compute_max_retries` 会保证实际
+/// 重试次数永远 ≥ 可用凭据数，因此即便账户数超过此值也至少能完整遍历一轮。
+/// 历史 bug：此值曾固定为 3，导致多账户场景下 429 风暴只尝试前 3 个凭据就放弃。
+const ABSOLUTE_MAX_TOTAL_RETRIES: usize = 64;
 
 /// 429 冷却默认时长（无 Retry-After 时使用 CooldownManager 的默认递增策略）
 const DEFAULT_RATE_LIMIT_COOLDOWN_SECS: u64 = 60;
@@ -353,7 +357,7 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
+        let max_retries = Self::compute_max_retries(total_credentials, available);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
 
@@ -546,19 +550,30 @@ impl KiroProvider {
                     );
                 }
 
-                // 折中策略（Round 8 决议）：平台不在凭据级做 429 限流，仅在本轮
-                // 请求里切下个凭据 retry。
-                //   - 不冻凭据（不调 handle_rate_limited_response）
-                //   - 不累计 trigger_count（避免 60→90→135s 指数雪球）
-                //   - 让上游自己做限流；本轮请求耗尽 MAX_TOTAL_RETRIES 后透传 429
-                //   - INSUFFICIENT_MODEL_CAPACITY（region capacity 池容量不足）走
-                //     同一路径 —— 跟凭据无关，切凭据也帮不了，但不主动惩罚账号
+                // 429 策略（Round 12 修订）：与 call_api_with_retry 同步——重新引入
+                // 固定时长、不累计的短冷却，避免跨请求反复撞同一个限流凭据。
+                //   - INSUFFICIENT_MODEL_CAPACITY 等容量类不冷却（跟凭据无关）
+                //   - 冷却用显式时长，绝不走 default_duration 递增（避免 Round 8 雪球）
                 let retry_secs = retry_after.map(|d| d.as_secs()).unwrap_or(0);
-                tracing::warn!(
-                    credential_id = %ctx.id,
-                    retry_after_secs = retry_secs,
-                    "MCP 请求触发 429，不冻凭据，切下个凭据 retry"
-                );
+                if let Some(cooldown) = Self::classify_429_cooldown(&body, retry_after) {
+                    let applied = self.token_manager.set_credential_cooldown_with_duration(
+                        ctx.id,
+                        crate::kiro::cooldown::CooldownReason::RateLimitExceeded,
+                        Some(cooldown),
+                    );
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        retry_after_secs = retry_secs,
+                        cooldown_secs = %applied.as_secs(),
+                        "MCP 请求触发 429，已打短冷却并切下个凭据"
+                    );
+                } else {
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        retry_after_secs = retry_secs,
+                        "MCP 请求触发 429（容量不足类，不冷却），切下个凭据"
+                    );
+                }
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                 continue;
             }
@@ -613,8 +628,8 @@ impl KiroProvider {
     ///
     /// 重试策略：
     /// - 每个凭据最多重试 MAX_RETRIES_PER_CREDENTIAL 次
-    /// - 总重试次数 = min(凭据数量 × 每凭据重试次数, MAX_TOTAL_RETRIES)
-    /// - 硬上限 3 次，避免无限重试
+    /// - 总重试次数由 compute_max_retries 计算：至少遍历每个可用凭据一轮，
+    ///   常规为凭据数 × 每凭据轮数，最高受 ABSOLUTE_MAX_TOTAL_RETRIES 兜底
     async fn call_api_with_retry(
         &self,
         request_body: &str,
@@ -626,7 +641,7 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
+        let max_retries = Self::compute_max_retries(total_credentials, available);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         // P0#1 修复：retry 链路必须排除上次失败的凭据，否则 acquire_context_for_user
@@ -918,19 +933,36 @@ impl KiroProvider {
                     );
                 }
 
-                // 折中策略（Round 8 决议）：429 不冻凭据，切下个凭据 retry。
-                // P0#1 强化：本轮 retry 强制 exclude 此凭据，由 LB 重新选号。
-                // 实测背景：未修前 100 burst 测试切换率 0%，21 次连续撞同一凭据；
-                // 24h 切换率仅 1.2%。affinity 命中是元凶——bound_id 没被 exclude
-                // 就一直短路回同一个凭据。
-                // 详见 MCP 同路径注释（line ~459）。
+                // 429 策略（Round 12 修订）：在 Round 8「不指数雪球」基础上，
+                // 重新引入固定时长、不累计的短冷却，解决跨请求反复撞同一个已知
+                // 限流凭据的问题。
+                //   - classify_429_cooldown 决定是否冷却 + 时长（容量不足类不冷却）
+                //   - 冷却用显式时长，绝不走 default_duration 的递增路径（避免雪球）
+                //   - 本轮 retry 仍强制 exclude 此凭据，由 LB 重新选号
+                //   - 跨请求：冷却让 acquire_context 直接零往返跳过限流号；全员限流时
+                //     token_manager 的 all-cooling 快路径带 Retry-After 快速 bail
                 let retry_secs = retry_after.map(|d| d.as_secs()).unwrap_or(0);
-                tracing::warn!(
-                    credential_id = %ctx.id,
-                    retry_after_secs = retry_secs,
-                    "{} API 请求触发 429，本轮 retry 跳过此凭据",
-                    api_type
-                );
+                if let Some(cooldown) = Self::classify_429_cooldown(&body, retry_after) {
+                    let applied = self.token_manager.set_credential_cooldown_with_duration(
+                        ctx.id,
+                        crate::kiro::cooldown::CooldownReason::RateLimitExceeded,
+                        Some(cooldown),
+                    );
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        retry_after_secs = retry_secs,
+                        cooldown_secs = %applied.as_secs(),
+                        "{} API 请求触发 429，已打短冷却并切下个凭据",
+                        api_type
+                    );
+                } else {
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        retry_after_secs = retry_secs,
+                        "{} API 请求触发 429（容量不足类，不冷却），切下个凭据",
+                        api_type
+                    );
+                }
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败: {} {}",
                     api_type,
@@ -1013,6 +1045,20 @@ impl KiroProvider {
         }))
     }
 
+    /// 计算单次请求的最大重试次数。
+    ///
+    /// 设计目标：多账户场景下，429 风暴或凭据级故障必须能遍历所有可用凭据，
+    /// 而不是只尝试前几个就放弃。
+    /// - 下限：至少 `available` 次，保证每个可用凭据都被尝试一轮。
+    /// - 常规：每凭据最多 `MAX_RETRIES_PER_CREDENTIAL` 轮。
+    /// - 上限：`ABSOLUTE_MAX_TOTAL_RETRIES` 仅约束 `total × 倍数` 的膨胀，绝不会把
+    ///   次数压到 `available` 以下。
+    fn compute_max_retries(total_credentials: usize, available: usize) -> usize {
+        let budget = total_credentials.saturating_mul(MAX_RETRIES_PER_CREDENTIAL);
+        let floor = available.max(1);
+        budget.max(floor).min(ABSOLUTE_MAX_TOTAL_RETRIES.max(floor))
+    }
+
     fn retry_delay(attempt: usize) -> Duration {
         // 指数退避 + 少量抖动，避免上游抖动时放大故障
         const BASE_MS: u64 = 200;
@@ -1026,11 +1072,10 @@ impl KiroProvider {
 
     /// 把当前凭据放入 RateLimitExceeded 冷却（trigger_count 指数退避）。
     ///
-    /// **Round 8 决议后保留但默认不调用** —— 平台不再在 429 路径冻凭据
-    /// （详见 4 个 429 分支的注释）。函数保留以便：
-    ///   a) 未来如果需要按 model 或按 reason 选择性冻凭据，可重新接入
-    ///   b) token_manager.set_credential_cooldown_with_duration 仍由 401/403
-    ///      / TokenRefreshFailed 等"凭据真坏"路径使用
+    /// 已被 Round 12 的内联 429 冷却逻辑取代（见两个 429 分支里的
+    /// `classify_429_cooldown` + `set_credential_cooldown_with_duration`）。
+    /// 此函数走的是 `default_duration` 指数累计路径，故新路径不再调用它，
+    /// 改为始终传显式固定时长。保留仅供未来按 model/reason 做指数退避冻结时参考。
     #[allow(dead_code)]
     fn handle_rate_limited_response(
         &self,
@@ -1078,6 +1123,47 @@ impl KiroProvider {
             Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS),
             Duration::from_secs(MAX_RATE_LIMIT_COOLDOWN_SECS),
         )
+    }
+
+    /// 决定一个 429 响应是否给凭据打短冷却、以及冷却多久。
+    ///
+    /// 返回 `Some(duration)` 表示应给该凭据打固定时长冷却。调用方必须把这个时长
+    /// 透传给 `set_credential_cooldown_with_duration`，避免回到默认递增冷却路径。
+    ///
+    /// 返回 `None` 表示不冷却该凭据，仅本轮切号：
+    /// - `INSUFFICIENT_MODEL_CAPACITY`：region 容量池不足，跟具体账号无关。
+    fn classify_429_cooldown(body: &str, retry_after: Option<Duration>) -> Option<Duration> {
+        if Self::is_insufficient_model_capacity(body) {
+            return None;
+        }
+
+        let base = retry_after.unwrap_or(Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS));
+        Some(Self::clamp_rate_limit_cooldown(base))
+    }
+
+    /// 检测是否为 region 容量不足类 429（与具体账号无关）。
+    fn is_insufficient_model_capacity(body: &str) -> bool {
+        if body.contains("INSUFFICIENT_MODEL_CAPACITY") {
+            return true;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+            return false;
+        };
+
+        let matches = |s: &str| {
+            s.to_ascii_uppercase()
+                .contains("INSUFFICIENT_MODEL_CAPACITY")
+        };
+
+        value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(matches)
+            || value
+                .pointer("/error/reason")
+                .and_then(|v| v.as_str())
+                .is_some_and(matches)
     }
 
     /// 检测响应体是否为 rate-limit 类错误。Round 8 决议后默认不接入，参见
@@ -1315,6 +1401,40 @@ mod tests {
     fn create_test_provider(config: Config, credentials: KiroCredentials) -> KiroProvider {
         let tm = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
         KiroProvider::new(Arc::new(tm))
+    }
+
+    #[test]
+    fn test_compute_max_retries_covers_all_credentials() {
+        assert_eq!(KiroProvider::compute_max_retries(1, 1), 2);
+        assert_eq!(KiroProvider::compute_max_retries(2, 2), 4);
+        assert!(KiroProvider::compute_max_retries(10, 10) >= 10);
+        assert!(KiroProvider::compute_max_retries(50, 50) >= 50);
+        assert!(KiroProvider::compute_max_retries(20, 7) >= 7);
+    }
+
+    #[test]
+    fn test_classify_429_cooldown_decision() {
+        use std::time::Duration;
+
+        let suspicious = r#"{"message":"Due to suspicious activity, we are imposing temporary limits on how frequently your account can send a request to Kiro while we investigate.","reason":null}"#;
+        let decision = KiroProvider::classify_429_cooldown(suspicious, None);
+        assert!(decision.is_some());
+        let d = decision.unwrap();
+        assert!(d >= Duration::from_secs(60) && d <= Duration::from_secs(300));
+
+        let classic = r#"{"message":"Too many requests","reason":"RATE_LIMIT_EXCEEDED"}"#;
+        assert!(KiroProvider::classify_429_cooldown(classic, None).is_some());
+
+        let capacity = r#"{"reason":"INSUFFICIENT_MODEL_CAPACITY"}"#;
+        assert!(KiroProvider::classify_429_cooldown(capacity, None).is_none());
+
+        let with_retry =
+            KiroProvider::classify_429_cooldown(suspicious, Some(Duration::from_secs(90)));
+        assert_eq!(with_retry, Some(Duration::from_secs(90)));
+
+        let huge =
+            KiroProvider::classify_429_cooldown(suspicious, Some(Duration::from_secs(99_999)));
+        assert_eq!(huge, Some(Duration::from_secs(300)));
     }
 
     #[test]

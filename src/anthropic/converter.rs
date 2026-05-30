@@ -1664,6 +1664,10 @@ mod tests {
             Some(KIRO_MODEL_OPUS_4_7.to_string())
         );
         assert_eq!(
+            map_model("claude-opus-4-8-thinking"),
+            Some(KIRO_MODEL_OPUS_4_8.to_string())
+        );
+        assert_eq!(
             map_model("claude-haiku-4-5-20251001-thinking"),
             Some(KIRO_MODEL_HAIKU_4_5.to_string())
         );
@@ -1715,6 +1719,9 @@ mod tests {
             ("claude-opus-4-7", KIRO_MODEL_OPUS_4_7),
             ("claude-opus-4-7-thinking", KIRO_MODEL_OPUS_4_7),
             ("claude-opus-4-7-agentic", KIRO_MODEL_OPUS_4_7),
+            ("claude-opus-4-8", KIRO_MODEL_OPUS_4_8),
+            ("claude-opus-4-8-thinking", KIRO_MODEL_OPUS_4_8),
+            ("claude-opus-4-8-agentic", KIRO_MODEL_OPUS_4_8),
             ("claude-haiku-4-5-20251001", KIRO_MODEL_HAIKU_4_5),
             ("claude-haiku-4-5-20251001-thinking", KIRO_MODEL_HAIKU_4_5),
             ("claude-haiku-4-5-20251001-agentic", KIRO_MODEL_HAIKU_4_5),

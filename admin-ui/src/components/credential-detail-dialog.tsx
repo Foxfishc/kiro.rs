@@ -474,7 +474,7 @@ export function CredentialDetailDialog({
                 </div>
                 <Progress
                   value={effectiveBalancePercentage}
-                  className="h-2 bg-slate-100 dark:bg-slate-800"
+                  className="h-2 bg-muted"
                 />
                 {overageEnabled && (
                   <div className="space-y-1 rounded border bg-purple-50/70 p-2 text-xs dark:bg-purple-950/20">
@@ -514,7 +514,7 @@ export function CredentialDetailDialog({
                 </div>
                 <Progress
                   value={cachedBalancePercentage}
-                  className="h-2 bg-slate-100 dark:bg-slate-800"
+                  className="h-2 bg-muted"
                 />
                 {overageEnabled && (
                   <div className="space-y-1 rounded border bg-purple-50/70 p-2 text-xs dark:bg-purple-950/20">

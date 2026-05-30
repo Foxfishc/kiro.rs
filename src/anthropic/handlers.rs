@@ -905,7 +905,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
         Model {
             id: "claude-opus-4-8".to_string(),
             object: "model".to_string(),
-            created: 1772992800,
+            created: 1775671200,
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.8".to_string(),
             model_type: "chat".to_string(),
@@ -917,7 +917,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
         Model {
             id: "claude-opus-4-8-thinking".to_string(),
             object: "model".to_string(),
-            created: 1772992800,
+            created: 1775671200,
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.8 (Thinking)".to_string(),
             model_type: "chat".to_string(),
@@ -929,7 +929,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
         Model {
             id: "claude-opus-4-8-agentic".to_string(),
             object: "model".to_string(),
-            created: 1772992800,
+            created: 1775671200,
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.8 (Agentic)".to_string(),
             model_type: "chat".to_string(),
@@ -2418,6 +2418,10 @@ mod tests {
         opus_47.model = "claude-opus-4-7-thinking".to_string();
         override_thinking_from_model_name(&mut opus_47);
 
+        let mut opus_48 = sample_messages_request();
+        opus_48.model = "claude-opus-4-8-thinking".to_string();
+        override_thinking_from_model_name(&mut opus_48);
+
         assert_eq!(
             opus_46.thinking.as_ref().map(|t| t.thinking_type.as_str()),
             Some("enabled")
@@ -2427,12 +2431,24 @@ mod tests {
             Some("adaptive")
         );
         assert_eq!(
+            opus_48.thinking.as_ref().map(|t| t.thinking_type.as_str()),
+            Some("adaptive")
+        );
+        assert_eq!(
             opus_47.thinking.as_ref().map(|t| t.budget_tokens),
             opus_46.thinking.as_ref().map(|t| t.budget_tokens)
+        );
+        assert_eq!(
+            opus_48.thinking.as_ref().map(|t| t.budget_tokens),
+            opus_47.thinking.as_ref().map(|t| t.budget_tokens)
         );
         assert!(opus_46.output_config.is_none());
         assert_eq!(
             opus_47.output_config.as_ref().map(|c| c.effort.as_str()),
+            Some("high")
+        );
+        assert_eq!(
+            opus_48.output_config.as_ref().map(|c| c.effort.as_str()),
             Some("high")
         );
     }

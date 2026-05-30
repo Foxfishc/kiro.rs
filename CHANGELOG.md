@@ -1,5 +1,18 @@
 # Changelog
 
+## [v1.1.38] - 2026-05-29
+
+合并上游 v1.1.35 ~ v1.1.37 功能，与本地的 prompt cache 精细化、overage capability 与 profileArn 兜底增强共存。
+
+### Fixed
+- **多账户 429 风暴下单次请求只重试前 3 个凭据就放弃** — 总重试次数此前固定为 `min(凭据数 × 2, MAX_TOTAL_RETRIES=3)`，导致即便配置了 10/50 个账户，单次请求遇到 429 也只在前 3 个凭据之间打转、无法遍历全部可用号。新增 `compute_max_retries(total, available)`：以可用凭据数为遍历下限（至少把每个可用号试一轮），常规按每凭据 2 轮预算，并将原硬上限改为防失控的绝对天花板 `ABSOLUTE_MAX_TOTAL_RETRIES=64`（仅约束膨胀，绝不把次数压到可用数以下）(`src/kiro/provider.rs`)
+- **修复 Admin UI 日/夜间模式失效与配色** — Tailwind v4 不再自动读取 `tailwind.config.js` 的 `darkMode: 'class'`，导致 `dark:` 工具类回退到系统 `prefers-color-scheme` 而与顶部切换按钮的 `.dark` class 脱节。现在在 `src/index.css` 显式声明 `@custom-variant dark (&:where(.dark, .dark *))` 让 dark 变体真正跟随 `.dark` class；同时重做深/浅主题调色板，将凭据卡片及内部面板由硬编码 `slate-*`/`white` 迁移到主题 token (`bg-card` / `bg-muted` / `text-foreground` / `text-muted-foreground` / `border-border`)。超额开关门控仍沿用本地的 `overageCapability` 套餐能力判断（与本地后端 capability 缓存 + profileArn 兜底解析一致），未采用上游的 `isSocial && hasProfileArn` 前置 (`admin-ui/src/index.css`, `admin-ui/tailwind.config.js`, `admin-ui/src/components/credential-card.tsx`, `admin-ui/src/components/credential-detail-dialog.tsx`)
+
+### Added
+- **429 跨请求短冷却分类（避免反复撞同一个已限流凭据）** — 新增 `classify_429_cooldown`，在流式与 MCP 两个 429 分支统一接入：普通限速与账户级 “suspicious activity” 临时限制（`reason: null`、不含传统 rate-limit 字样，此前完全不冷却）现在会给凭据打**固定时长**短冷却，`acquire_context` 后续可零往返直接跳过已知限流的号；`INSUFFICIENT_MODEL_CAPACITY`（region 容量不足，与账号无关）只切号不冷却。冷却时长有 `Retry-After` 用它、否则用默认窗口，统一 clamp 到 `[60, 300]s`，并始终以**显式时长**写入 `set_credential_cooldown_with_duration`，绝不走 `default_duration` 的指数累计路径 (`src/kiro/provider.rs`)
+- **主题持久化与防首屏闪烁** — 主题偏好保存到 `localStorage`（key `adminTheme`，未设置时跟随系统），并在 `index.html` 首屏渲染前内联应用 `.dark` class，消除刷新时的亮/暗闪烁；Dashboard 切换按钮同步持久化 (`admin-ui/src/lib/storage.ts`, `admin-ui/index.html`, `admin-ui/src/components/dashboard.tsx`)
+- **补齐 Opus 4.8 模型映射回归测试** — 为 `claude-opus-4-8` / `-thinking` / `-agentic` 补充 `map_model` 与 thinking 路由（`adaptive` + `effort=high`）回归测试，并对齐 `/v1/models` 中 Opus 4.8 三个条目的 `created` 时间戳 (`src/anthropic/converter.rs`, `src/anthropic/handlers.rs`)
+
 ## [v1.1.30] - 2026-05-08
 
 ### Fixed
