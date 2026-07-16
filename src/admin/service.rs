@@ -842,6 +842,20 @@ impl AdminService {
         // 生成指纹（用于识别和去重）
         let fingerprint = Self::generate_fingerprint(&item);
 
+        // api_key 账号：无 refreshToken，直接用 kiroApiKey 作为凭据。
+        // 判定：显式 kiroApiKey 非空，或 authMethod == api_key/apikey。
+        let is_api_key = item.resolved_kiro_api_key().is_some()
+            || item
+                .resolved_auth_method()
+                .map(|m| {
+                    let l = m.to_lowercase();
+                    l == "api_key" || l == "apikey"
+                })
+                .unwrap_or(false);
+        if is_api_key {
+            return self.process_api_key_item(index, fingerprint, item, dry_run).await;
+        }
+
         // 验证必填字段（顶层扁平优先，回退嵌套 credentials）
         let refresh_token = match item.resolved_refresh_token() {
             Some(rt) => rt,
@@ -850,7 +864,7 @@ impl AdminService {
                     index,
                     fingerprint,
                     action: ImportAction::Invalid,
-                    reason: Some("缺少 refreshToken".to_string()),
+                    reason: Some("缺少 refreshToken 或 kiroApiKey".to_string()),
                     credential_id: None,
                 };
             }
@@ -943,6 +957,105 @@ impl AdminService {
             machine_id: item.resolved_machine_id(),
             endpoint: None,
             idp: item.idp_hint().map(|s| s.to_string()),
+            overage_enabled: None,
+            email: item.resolved_email(),
+            subscription_title: None,
+            proxy_url: None,
+            proxy_username: None,
+            proxy_password: None,
+            disabled: false,
+            runtime_only: false,
+        };
+
+        match self.token_manager.add_credential(new_cred).await {
+            Ok(credential_id) => ImportItemResult {
+                index,
+                fingerprint,
+                action: ImportAction::Added,
+                reason: None,
+                credential_id: Some(credential_id),
+            },
+            Err(e) => ImportItemResult {
+                index,
+                fingerprint,
+                action: ImportAction::Invalid,
+                reason: Some(e.to_string()),
+                credential_id: None,
+            },
+        }
+    }
+
+    /// 处理单个 api_key 导入项（无 refreshToken，直接用 kiroApiKey 作为凭据）。
+    /// 落库规则对齐 Kiro-Go：authMethod=api_key、profileArn 不解析、永不刷新。
+    async fn process_api_key_item(
+        &self,
+        index: usize,
+        fingerprint: String,
+        item: TokenJsonItem,
+        dry_run: bool,
+    ) -> ImportItemResult {
+        let api_key = match item.resolved_kiro_api_key() {
+            Some(k) => k,
+            None => {
+                return ImportItemResult {
+                    index,
+                    fingerprint,
+                    action: ImportAction::Invalid,
+                    reason: Some("api_key 认证需要 kiroApiKey".to_string()),
+                    credential_id: None,
+                };
+            }
+        };
+
+        // 去重：完整比对已有 kiroApiKey
+        if self.token_manager.has_api_key(&api_key) {
+            return ImportItemResult {
+                index,
+                fingerprint,
+                action: ImportAction::Skipped,
+                reason: Some("凭据已存在".to_string()),
+                credential_id: None,
+            };
+        }
+
+        if dry_run {
+            return ImportItemResult {
+                index,
+                fingerprint,
+                action: ImportAction::Added,
+                reason: Some("预览模式".to_string()),
+                credential_id: None,
+            };
+        }
+
+        let region = item
+            .resolved_region()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let api_region = item
+            .resolved_api_region()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let new_cred = KiroCredentials {
+            id: None,
+            access_token: None,
+            refresh_token: None,
+            kiro_api_key: Some(api_key),
+            profile_arn: None,
+            expires_at: None,
+            auth_method: Some("api_key".to_string()),
+            client_id: None,
+            client_secret: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
+            provider: item.resolved_provider(),
+            priority: item.priority,
+            region,
+            api_region,
+            machine_id: item.resolved_machine_id(),
+            endpoint: None,
+            idp: None,
             overage_enabled: None,
             email: item.resolved_email(),
             subscription_title: None,

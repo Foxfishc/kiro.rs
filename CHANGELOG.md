@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.1.39] - 2026-07-16
+
+本版新增 **api_key 账号类型的批量导入**，参考 Kiro-Go 的 api_key 实现融入。kiro-rs 此前已支持 api_key 账号的数据面（`tokentype: API_KEY` 头、跳过 profileArn 解析、单个添加），本版补齐批量导入这一缺口。
+
+### Added
+
+- **api_key 凭据批量导入** — 复用现有 `/api/admin/credentials/import-token-json` 端点（不新增路由），新增 api_key 识别分支：无 refreshToken 时以 `kiroApiKey` 作为凭据落库，`authMethod=api_key`、不解析 profileArn、永不进入刷新路径。落库前实测调用 usage-limits 端点验活，无效 key（403）直接拒绝，不留死凭据。按完整 `kiroApiKey` 字符串去重 (`src/admin/service.rs`, `src/kiro/token_manager.rs`)
+- **三种 api_key 导入输入格式** — 导入弹窗同时支持：①纯文本每行一个 API key（非 JSON 输入自动按换行拆分，`#` 开头为注释）；②camelCase JSON 数组 `[{"kiroApiKey":"...","region":"..."}]`；③CLIProxyAPI 导出格式（snake_case `kiro_api_key`/`auth_method`/`api_region` 等，通过 serde alias 兼容），并自动跳过 `type` 非 `kiro` 的条目 (`admin-ui/src/components/import-token-json-dialog.tsx`, `admin-ui/src/types/api.ts`)
+
+### Fixed
+
+- **导入校验放宽以支持 api_key** — 导入项有效性判定从「必须含 refreshToken」放宽为「含 refreshToken 或 kiroApiKey」，无效提示同步更新为「缺少 refreshToken 或 kiroApiKey」 (`src/admin/service.rs`)
+- **`TokenJsonItem` / `NestedCredentials` 补齐 snake_case 别名** — 为 refreshToken/clientId/clientSecret/authMethod/apiRegion/profileArn/tokenEndpoint/issuerUrl 等字段补充 `#[serde(alias)]`，使 CLIProxyAPI 的 snake_case 导出可被直接解析 (`src/admin/types.rs`)
+
 ## [v1.1.38] - 2026-07-10
 
 本版聚焦**企业与外部身份提供方（IdP）账号接入**：新增 Kiro SSO 浏览器登录、AWS IAM Identity Center 直连登录、外部 IdP（Azure AD）登录与刷新全链路，修复企业租户账号全线 403 的 profileArn 问题；同时新增凭据批量导出，并修复 Azure AD 凭据导入被误判重复的 bug。

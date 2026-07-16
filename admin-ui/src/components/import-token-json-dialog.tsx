@@ -171,6 +171,15 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
     try {
       parsed = JSON.parse(text)
     } catch {
+      // 非 JSON：按「每行一个 API key」的纯文本批量导入处理（对齐 Kiro-Go apikeys-batch）。
+      const keys = text
+        .split(/\r?\n/)
+        .map(l => l.trim())
+        .filter(l => l.length > 0 && !l.startsWith('#'))
+      if (keys.length > 0) {
+        const items = keys.map(k => ({ kiroApiKey: k, authMethod: 'api_key' }) as TokenJsonItem)
+        return { items, error: null }
+      }
       return { items: null, error: 'JSON 格式无效' }
     }
 
@@ -189,6 +198,11 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
 
     const validItems: TokenJsonItem[] = []
     for (const item of rawItems) {
+      // CLIProxyAPI 导出：跳过 type 非空且非 "kiro" 的条目（如 gemini/openai）
+      if (item && typeof item === 'object') {
+        const t = (item as Record<string, unknown>).type
+        if (typeof t === 'string' && t.trim() && t.trim().toLowerCase() !== 'kiro') continue
+      }
       const normalized = normalizeKamAccount(item)
       if (!normalized || typeof normalized !== 'object') continue
       const obj = normalized as Record<string, unknown>
@@ -197,6 +211,17 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
       if (obj.credentials && typeof obj.credentials === 'object') {
         const flat = flattenKamAccount(obj)
         if (flat) validItems.push(flat)
+        continue
+      }
+
+      // api_key 扁平格式：{ kiroApiKey / apiKey / kiro_api_key, ... }（无 refreshToken）
+      const apiKeyRaw = obj.kiroApiKey ?? obj.apiKey ?? obj.kiro_api_key
+      if (typeof apiKeyRaw === 'string' && apiKeyRaw.trim()) {
+        const tokenItem = { ...obj, kiroApiKey: apiKeyRaw.trim(), authMethod: 'api_key' } as TokenJsonItem
+        if (!tokenItem.region && obj.authRegion) {
+          tokenItem.region = obj.authRegion as string
+        }
+        validItems.push(tokenItem)
         continue
       }
 
@@ -215,7 +240,7 @@ export function ImportTokenJsonDialog({ open, onOpenChange }: ImportTokenJsonDia
     }
 
     if (validItems.length === 0) {
-      return { items: null, error: 'JSON 中没有找到有效的凭据（需要包含 refreshToken 字段）' }
+      return { items: null, error: 'JSON 中没有找到有效的凭据（需要包含 refreshToken 或 kiroApiKey 字段）' }
     }
     return { items: validItems, error: null }
   }, [flattenKamAccount, normalizeKamAccount])

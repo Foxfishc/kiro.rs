@@ -3722,6 +3722,18 @@ impl MultiTokenManager {
         })
     }
 
+    /// 检查是否存在具有相同 kiroApiKey 的凭据（api_key 批量导入去重，完整比对）。
+    pub fn has_api_key(&self, api_key: &str) -> bool {
+        let entries = self.entries.lock();
+        entries.iter().any(|e| {
+            e.credentials
+                .kiro_api_key
+                .as_deref()
+                .map(|k| k == api_key)
+                .unwrap_or(false)
+        })
+    }
+
     // ========================================================================
     // 增强特性：设备指纹、速率限制、冷却管理、后台刷新
     // ========================================================================

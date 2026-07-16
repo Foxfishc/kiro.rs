@@ -376,16 +376,28 @@ impl SuccessResponse {
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct NestedCredentials {
+    #[serde(alias = "access_token")]
     pub access_token: Option<String>,
+    #[serde(alias = "refresh_token")]
     pub refresh_token: Option<String>,
+    #[serde(alias = "client_id")]
     pub client_id: Option<String>,
+    #[serde(alias = "client_secret")]
     pub client_secret: Option<String>,
     pub region: Option<String>,
+    #[serde(alias = "api_region")]
     pub api_region: Option<String>,
+    #[serde(alias = "auth_method")]
     pub auth_method: Option<String>,
+    #[serde(alias = "profile_arn")]
     pub profile_arn: Option<String>,
+    /// api_key 凭据（CLIProxyAPI 导出用 snake_case kiro_api_key）
+    #[serde(alias = "kiro_api_key")]
+    pub kiro_api_key: Option<String>,
     /// external_idp（Azure AD）刷新所需
+    #[serde(alias = "token_endpoint")]
     pub token_endpoint: Option<String>,
+    #[serde(alias = "issuer_url")]
     pub issuer_url: Option<String>,
     pub scopes: Option<String>,
     pub provider: Option<String>,
@@ -402,9 +414,16 @@ pub struct NestedCredentials {
 #[serde(rename_all = "camelCase")]
 pub struct TokenJsonItem {
     pub provider: Option<String>,
+    #[serde(alias = "refresh_token")]
     pub refresh_token: Option<String>,
+    /// api_key 凭据（顶层扁平；CLIProxyAPI snake_case 用 kiro_api_key）
+    #[serde(alias = "kiro_api_key")]
+    pub kiro_api_key: Option<String>,
+    #[serde(alias = "client_id")]
     pub client_id: Option<String>,
+    #[serde(alias = "client_secret")]
     pub client_secret: Option<String>,
+    #[serde(alias = "auth_method")]
     pub auth_method: Option<String>,
     #[serde(default)]
     pub priority: u32,
@@ -435,6 +454,15 @@ impl TokenJsonItem {
         self.refresh_token
             .clone()
             .or_else(|| self.nested().and_then(|c| c.refresh_token.clone()))
+            .filter(|s| !s.is_empty())
+    }
+
+    /// kiroApiKey：顶层优先，回退嵌套（api_key 账号凭据）。
+    pub fn resolved_kiro_api_key(&self) -> Option<String> {
+        self.kiro_api_key
+            .clone()
+            .or_else(|| self.nested().and_then(|c| c.kiro_api_key.clone()))
+            .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
 

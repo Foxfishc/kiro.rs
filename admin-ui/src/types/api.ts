@@ -361,6 +361,7 @@ export interface CredentialAccountInfoResponse {
 export interface TokenJsonItem {
   provider?: string
   refreshToken?: string
+  kiroApiKey?: string
   accessToken?: string
   clientId?: string
   clientSecret?: string
